@@ -120,10 +120,14 @@ export function loadSpreadJS(): HeadlessEnvironment {
   const optional: ReadonlyArray<[string, string]> = [
     ['spread-sheets-shapes', '@grapecity-software/spread-sheets-shapes'],
     ['spread-sheets-charts', '@grapecity-software/spread-sheets-charts'],
+    // slicers depends on shapes (loaded above); pivot slicers additionally need
+    // the pivot add-on.
+    ['spread-sheets-slicers', '@grapecity-software/spread-sheets-slicers'],
     // pdf must be loaded AFTER print.
     ['spread-sheets-print', '@grapecity-software/spread-sheets-print'],
     ['spread-sheets-pdf', '@grapecity-software/spread-sheets-pdf'],
     ['spread-sheets-pivot', '@grapecity-software/spread-sheets-pivot-addon'],
+    ['spread-sheets-datacharts', '@grapecity-software/spread-sheets-datacharts-addon'],
   ]
   const loadedOptional: string[] = []
   for (const [name, pkg] of optional) {

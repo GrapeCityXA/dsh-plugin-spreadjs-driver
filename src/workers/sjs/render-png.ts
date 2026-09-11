@@ -118,8 +118,11 @@ export async function renderWorkbookToPng(
   let hostW: number
   let hostH: number
   if (measure.used === null) {
-    hostW = EMPTY_WIDTH
-    hostH = EMPTY_HEIGHT
+    // A sheet with no used cell range (a pivot layout, or a sheet carrying only
+    // floating objects) still has content: the fixed viewport is a floor, not a
+    // ceiling, so anything beyond it must extend the canvas.
+    hostW = Math.min(MAX_WIDTH, Math.max(EMPTY_WIDTH, Math.ceil(contentW) + SCROLLBAR + CONTENT_PAD))
+    hostH = Math.min(MAX_HEIGHT, Math.max(EMPTY_HEIGHT, Math.ceil(contentH) + SCROLLBAR + CONTENT_PAD))
   } else {
     hostW = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.ceil(contentW) + SCROLLBAR + CONTENT_PAD))
     hostH = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.ceil(contentH) + SCROLLBAR + CONTENT_PAD))
@@ -228,7 +231,9 @@ async function measureWorkbook(
     spread.refresh()
     await sleep(160) // let the first paint settle so getCellRect is measurable
     if (used === null || sheet === undefined || sheet === null) {
-      return { used: null, contentWidth: 0, contentHeight: 0, sheetName }
+      // No used cells — but the sheet may still carry floating objects.
+      const extent = sheet === undefined || sheet === null ? { right: 0, bottom: 0 } : floatingObjectExtent(sheet)
+      return { used: null, contentWidth: extent.right, contentHeight: extent.bottom, sheetName }
     }
     const lastRow = used.row + used.rowCount - 1
     const lastCol = used.col + used.colCount - 1

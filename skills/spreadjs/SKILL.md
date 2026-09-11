@@ -145,19 +145,31 @@ layout section below), `.name('…')` (both getter and setter),
 `getUsedRange()` with no argument can return `null` here — pass the enum
 explicitly.
 
-**Charts and shapes are available.** The `shapes` + `charts` packs ship with the
-plugin, so charts work from `sjs_execute`:
+**Charts, shapes, slicers and pivot tables are available.** The `shapes`,
+`charts`, `slicers`, `pivot-addon` and `datacharts-addon` packs ship with the
+plugin:
 
 ```js
+// chart — the data range is an ARGUMENT of charts.add
 const chart = s.charts.add('c1', GC.Spread.Sheets.Charts.ChartType.columnClustered, 260, 20, 380, 240, 'A1:B5')
 const title = chart.title(); title.text = '季度销量'; chart.title(title)   // read → mutate → set back
+
+// pivot — sourceData is a table name (or an absolute-range formula)
+d.tables.add('tableSales', 0, 0, 5, 2)
+spread.addSheet(spread.getSheetCount(), new GC.Spread.Sheets.Worksheet('PivotLayout'))
+const layout = spread.getSheet(spread.getSheetCount() - 1)
+const pt = layout.pivotTables.add('pt1', 'tableSales', 1, 0, GC.Spread.Pivot.PivotTableLayoutType.outline, GC.Spread.Pivot.PivotTableThemes.medium8)
+pt.add('地区', '地区', GC.Spread.Pivot.PivotTableFieldType.rowField)
+pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, GC.Pivot.SubtotalType.sum)
+layout.slicers.add('sl1', 'pt1', '地区', GC.Spread.Sheets.Slicers.SlicerStyles.light1(), GC.Spread.Sheets.Slicers.SlicerType.pivotTable)
 ```
 
-The data range is an *argument* of `charts.add` (there is no `categoryNames` /
-`series().add(name, range)` path), and `chart.x()/y()/width()/height()` report
-its geometry. A png snapshot covers floating objects — charts, shapes and
-pictures — even when they sit outside the used cell range, so a chart next to
-the table shows up in the image.
+There is no `series().add(name, range)` / `categoryNames` path — pass the range to
+`charts.add`. `chart.x()/y()/width()/height()` report geometry, and
+`spread.setActiveSheetIndex(i)` selects which sheet a snapshot renders. A png
+snapshot covers floating objects — charts, shapes, slicers, pictures — even when
+they sit outside the used cell range or on a sheet that has no used cells at all
+(a pivot layout).
 
 The `return` value must be JSON-serializable and becomes the tool result; return
 `undefined` to get the workbook summary. Returning more than ~200k characters of

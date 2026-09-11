@@ -66,7 +66,7 @@ return { total: s.getValue(5, 1) }
 - `sjs_screenshot` 的 png 渲染带 **"Evaluation Version" 水印**（未授权引擎会在它绘制的画布上盖章）；PDF 导出与导出的 `.xlsx` / `.csv` / `.ssjson` 文件均不带水印。这是引擎的预期行为，不影响功能。
 - 截图 `png` 的文字会统一用一种可读的中文字体重绘，因此图像中逐格字体/字重差异会被拉平——**仅影响图片**；截图绝不修改工作簿文件。
 - 本版本的 worktree 支持 `create`/`list`；审批（`merge`/`discard`）为后续阶段。
-- `sjs_execute` 可驱动图表与形状（`shapes` + `charts` 包随插件一起分发）；png 截图会覆盖浮动对象，即使它位于已用单元格范围之外。
+- `sjs_execute` 可驱动图表、形状、切片器与数据透视表（`shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` 包随插件一起分发）；png 截图会覆盖浮动对象，即使它位于已用单元格范围之外，或处于没有已用单元格的工作表（如透视表布局页）。
 
 ## 开发
 

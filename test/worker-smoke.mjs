@@ -331,6 +331,40 @@ const run = async () => {
     assert(envelope.result.width >= 600, `png covers the chart's right edge (width ${envelope.result.width})`)
   })()
 
+  await step('screenshot covers a pivot sheet whose slicer sits past the viewport', async () => {
+    // The pivot add-on and slicers packs must both be present, and a pivot
+    // layout sheet has no used cell range of its own — so the canvas has to
+    // grow to the floating objects instead of falling back to a fixed viewport
+    // that crops them.
+    const prep = [
+      'const d = sheet()',
+      "d.name('DataSource')",
+      "d.setArray(0, 0, [['地区', '金额'], ['华东', 100], ['华北', 200], ['华东', 150]])",
+      "d.tables.add('tableSales', 0, 0, 4, 2)",
+      "spread.addSheet(spread.getSheetCount(), new GC.Spread.Sheets.Worksheet('PivotLayout'))",
+      'const layout = spread.getSheet(spread.getSheetCount() - 1)',
+      "const pt = layout.pivotTables.add('pt1', 'tableSales', 1, 0, GC.Spread.Pivot.PivotTableLayoutType.outline, GC.Spread.Pivot.PivotTableThemes.medium8)",
+      'pt.suspendLayout()',
+      "pt.add('地区', '地区', GC.Spread.Pivot.PivotTableFieldType.rowField)",
+      "pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, GC.Pivot.SubtotalType.sum)",
+      'pt.resumeLayout()',
+      "const sl = layout.slicers.add('sl1', 'pt1', '地区', GC.Spread.Sheets.Slicers.SlicerStyles.light1(), GC.Spread.Sheets.Slicers.SlicerType.pivotTable)",
+      'sl.position(new GC.Spread.Sheets.Point(1000, 10))',
+      'spread.setActiveSheetIndex(spread.getSheetCount() - 1)',
+      'return { pivots: layout.pivotTables.all().length, slicers: layout.slicers.all().length }',
+    ].join('\n')
+    const { envelope: prepEnv } = await runWorker({ op: 'execute', sourcePath: workbook, workspaceRoot: dir, code: prep })
+    assertOk(prepEnv, 'pivot + slicer prep execute')
+    assert(prepEnv.result.pivots === 1, 'pivot table created')
+    assert(prepEnv.result.slicers === 1, 'slicer created')
+
+    const pivotPng = join(dir, 'shot-pivot.png')
+    const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pivotPng, format: 'png' })
+    assertOk(envelope, 'png of a pivot sheet renders')
+    assert(envelope.result.sheet === 'PivotLayout', 'png follows the active sheet')
+    assert(envelope.result.width >= 1100, `png covers the slicer past the default viewport (width ${envelope.result.width})`)
+  })()
+
   await step('screenshot pdf snapshot writes a %PDF file', async () => {
     const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pdfSnapshot, format: 'pdf' })
     if (!envelope.ok) {

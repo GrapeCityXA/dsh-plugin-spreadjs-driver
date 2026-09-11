@@ -70,10 +70,13 @@
   "dependencies": {
     "@grapecity-software/spread-sheets": "^19.1.4",
     "@grapecity-software/spread-sheets-charts": "^19.1.4",
+    "@grapecity-software/spread-sheets-datacharts-addon": "^19.1.4",
     "@grapecity-software/spread-sheets-io": "^19.1.4",
     "@grapecity-software/spread-sheets-pdf": "^19.1.4",
+    "@grapecity-software/spread-sheets-pivot-addon": "^19.1.4",
     "@grapecity-software/spread-sheets-print": "^19.1.4",
     "@grapecity-software/spread-sheets-shapes": "^19.1.4",
+    "@grapecity-software/spread-sheets-slicers": "^19.1.4",
     "canvas": "^3.2.3",
     "jsdom": "^30.0.1"
   }
