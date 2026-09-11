@@ -5,3 +5,6 @@ artifacts/
 out/
 test-tmp/
 .DS_Store
+# Development scratch: keep only the probe cited as evidence in render-png.ts.
+scratch/*
+!scratch/png-probe14.mjs

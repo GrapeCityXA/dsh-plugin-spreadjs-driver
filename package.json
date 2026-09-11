@@ -1,7 +1,17 @@
 {
   "name": "dsh-spreadjs-excel",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "SpreadJS spreadsheets for DeepSeek Harness (DSH): import/export Excel, formula recalculation, execution fallback and PDF export through headless workers.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "spreadjs",
+    "spreadsheet",
+    "excel",
+    "xlsx",
+    "plugin"
+  ],
   "type": "module",
   "main": "./lib/index.js",
   "files": [

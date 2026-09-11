@@ -16,7 +16,7 @@ English · [简体中文](README.zh-CN.md)
 From a tarball or the npm registry into the profile you run DSH under:
 
 ```
-dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-0.1.0.tgz
+dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-<version>.tgz
 # once published:
 dsh plugin --profile <your-profile> add dsh-spreadjs-excel
 ```
@@ -78,3 +78,7 @@ npm pack               # → dsh-spreadjs-excel-<version>.tgz
 ```
 
 Install the tarball into a scratch profile and drive the tools from a real session to smoke-test end to end.
+
+## License
+
+MIT — see `LICENSE`. The bundled `@grapecity-software/*` SpreadJS packages are a separate product under their own licence terms; this plugin only wires them into DSH.

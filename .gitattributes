@@ -1,0 +1,6 @@
+# Keep the repository LF-native regardless of the checkout platform; without
+# this, a Windows checkout rewrites every source file to CRLF.
+* text=auto eol=lf
+*.xlsx binary
+*.png binary
+*.tgz binary

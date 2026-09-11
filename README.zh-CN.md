@@ -16,7 +16,7 @@
 在运行 DSH 的 profile 中，从 tarball 或 npm 仓库安装：
 
 ```
-dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-0.1.0.tgz
+dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-<version>.tgz
 # 发布后：
 dsh plugin --profile <your-profile> add dsh-spreadjs-excel
 ```
@@ -78,3 +78,7 @@ npm pack               # → dsh-spreadjs-excel-<version>.tgz
 ```
 
 把 tarball 装进一个临时 profile，在真实会话中驱动这些工具做端到端冒烟。
+
+## 许可证
+
+MIT，见 `LICENSE`。所依赖的 `@grapecity-software/*`（SpreadJS）是独立产品，适用其自身的许可条款；本插件只负责把它接入 DSH。
