@@ -309,6 +309,28 @@ const run = async () => {
     }
   })()
 
+  await step('screenshot covers a chart placed outside the used range', async () => {
+    // The shapes+charts packs are runtime dependencies; without them a chart
+    // cannot be created at all. And a chart sits at its own coordinates, so a
+    // canvas sized to the used cells alone would crop it out of the snapshot.
+    const prep = [
+      'const s = sheet()',
+      "const rows = [['1月', 120], ['2月', 180], ['3月', 150]]",
+      "s.setValue(0, 0, '月份'); s.setValue(0, 1, '销量')",
+      'rows.forEach((r, i) => { s.setValue(i + 1, 0, r[0]); s.setValue(i + 1, 1, r[1]) })',
+      "s.charts.add('c1', GC.Spread.Sheets.Charts.ChartType.columnClustered, 260, 20, 380, 240, 'A1:B4')",
+      'return { charts: s.charts.all().length }',
+    ].join('\n')
+    const { envelope: prepEnv } = await runWorker({ op: 'execute', sourcePath: workbook, workspaceRoot: dir, code: prep })
+    assertOk(prepEnv, 'chart prep execute')
+    assert(prepEnv.result.charts === 1, 'chart added to the sheet')
+
+    const chartPng = join(dir, 'shot-chart.png')
+    const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: chartPng, format: 'png' })
+    assertOk(envelope, 'png of a sheet carrying a chart renders')
+    assert(envelope.result.width >= 600, `png covers the chart's right edge (width ${envelope.result.width})`)
+  })()
+
   await step('screenshot pdf snapshot writes a %PDF file', async () => {
     const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pdfSnapshot, format: 'pdf' })
     if (!envelope.ok) {

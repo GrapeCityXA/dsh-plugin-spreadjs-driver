@@ -145,6 +145,20 @@ layout section below), `.name('…')` (both getter and setter),
 `getUsedRange()` with no argument can return `null` here — pass the enum
 explicitly.
 
+**Charts and shapes are available.** The `shapes` + `charts` packs ship with the
+plugin, so charts work from `sjs_execute`:
+
+```js
+const chart = s.charts.add('c1', GC.Spread.Sheets.Charts.ChartType.columnClustered, 260, 20, 380, 240, 'A1:B5')
+const title = chart.title(); title.text = '季度销量'; chart.title(title)   // read → mutate → set back
+```
+
+The data range is an *argument* of `charts.add` (there is no `categoryNames` /
+`series().add(name, range)` path), and `chart.x()/y()/width()/height()` report
+its geometry. A png snapshot covers floating objects — charts, shapes and
+pictures — even when they sit outside the used cell range, so a chart next to
+the table shows up in the image.
+
 The `return` value must be JSON-serializable and becomes the tool result; return
 `undefined` to get the workbook summary. Returning more than ~200k characters of
 JSON throws `SJS_RESULT_TOO_LARGE` — return a compact summary or call

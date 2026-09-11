@@ -50,6 +50,7 @@ const shipped = new Set((first.files ?? []).map((entry) => entry.path))
 
 const required = [
   'package.json',
+  'LICENSE',
   'cordis.patch.yml',
   'README.md',
   'README.zh-CN.md',

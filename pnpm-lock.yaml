@@ -11,6 +11,9 @@ importers:
       '@grapecity-software/spread-sheets':
         specifier: ^19.1.4
         version: 19.1.4
+      '@grapecity-software/spread-sheets-charts':
+        specifier: ^19.1.4
+        version: 19.1.4
       '@grapecity-software/spread-sheets-io':
         specifier: ^19.1.4
         version: 19.1.4
@@ -18,6 +21,9 @@ importers:
         specifier: ^19.1.4
         version: 19.1.4
       '@grapecity-software/spread-sheets-print':
+        specifier: ^19.1.4
+        version: 19.1.4
+      '@grapecity-software/spread-sheets-shapes':
         specifier: ^19.1.4
         version: 19.1.4
       canvas:
@@ -404,6 +410,9 @@ packages:
       '@noble/hashes':
         optional: true
 
+  '@grapecity-software/spread-sheets-charts@19.1.4':
+    resolution: {integrity: sha512-Ftj5cKyXwaEpfQ9mjNP+DawSJVFiYTY9ys/FrlQsAlAofQFbSuw3VVOBxxrFi3Vz5bxs2WX4jnB/koFeKcORhA==}
+
   '@grapecity-software/spread-sheets-io@19.1.4':
     resolution: {integrity: sha512-JWlao6TjGW4ERoAE3MvQYXl+wB/vglz8stM94KT17iVivIj+UwmKBDlvGLxvOLNnF08XRZmCZU4MI/yYGj7KUQ==}
 
@@ -412,6 +421,9 @@ packages:
 
   '@grapecity-software/spread-sheets-print@19.1.4':
     resolution: {integrity: sha512-jC3kuuKdEJMZoSqfz7lBp2MIIBBoiPoipQWC/FAf68HMrgkaITBRmwUtJXpdXfk3Rt0ACaaPDTENKz0vUZh0vA==}
+
+  '@grapecity-software/spread-sheets-shapes@19.1.4':
+    resolution: {integrity: sha512-MfoC0ECGzQ7o0VrPukVfywKqtI07xaObJnNgcV5YqwpX5GVD8vblafE1b2wv3CX7JvsZH3BEHhCL+oNinwybCg==}
 
   '@grapecity-software/spread-sheets@19.1.4':
     resolution: {integrity: sha512-cSGDInhyxD5+nwASHwEknqhMQkZE0daWs5q23io3jg/+bwGLs8Ov1iBcOrB8Pc+POHc7t1Egpiyt6cNeggnq/Q==}
@@ -927,6 +939,11 @@ snapshots:
 
   '@exodus/bytes@1.15.1': {}
 
+  '@grapecity-software/spread-sheets-charts@19.1.4':
+    dependencies:
+      '@grapecity-software/spread-sheets': 19.1.4
+      '@grapecity-software/spread-sheets-shapes': 19.1.4
+
   '@grapecity-software/spread-sheets-io@19.1.4':
     dependencies:
       '@grapecity-software/spread-sheets': 19.1.4
@@ -937,6 +954,10 @@ snapshots:
       '@grapecity-software/spread-sheets-print': 19.1.4
 
   '@grapecity-software/spread-sheets-print@19.1.4':
+    dependencies:
+      '@grapecity-software/spread-sheets': 19.1.4
+
+  '@grapecity-software/spread-sheets-shapes@19.1.4':
     dependencies:
       '@grapecity-software/spread-sheets': 19.1.4
 

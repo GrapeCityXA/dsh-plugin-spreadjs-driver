@@ -66,6 +66,7 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 - `sjs_screenshot` png renders carry the **"Evaluation Version" watermark** (the unlicensed engine stamps the canvas it draws). PDF exports and the exported `.xlsx` / `.csv` / `.ssjson` files are clean. That is expected behaviour of the engine and does not affect functionality.
 - Screenshot `png` text is re-rendered in one readable CJK-capable font, so per-cell font/weight variety is flattened **in the image only**; the workbook file is never modified by a screenshot.
 - Worktrees support `create`/`list` in this release; approval (`merge`/`discard`) is a later phase.
+- `sjs_execute` can drive charts and shapes (the `shapes` + `charts` packs ship with the plugin); a `png` snapshot covers floating objects even when they sit outside the used cell range.
 
 ## Development
 

@@ -176,6 +176,40 @@ function usedRangeOf(sheet: any, GC: Gc): { row: number; rowCount: number; col: 
   }
 }
 
+/**
+ * Right/bottom edges of every floating object whose geometry reads as finite.
+ * Charts, shapes and pictures each expose `x()/y()/width()/height()`; an object
+ * whose API differs (or a pack that is not loaded) is skipped rather than fatal.
+ */
+function floatingObjectExtent(sheet: any): { right: number; bottom: number } {
+  let right = 0
+  let bottom = 0
+  for (const key of ['charts', 'shapes', 'pictures']) {
+    const collection = sheet?.[key]
+    if (collection === undefined || collection === null || typeof collection.all !== 'function') continue
+    let objects: any[]
+    try {
+      objects = collection.all() ?? []
+    } catch {
+      continue
+    }
+    for (const object of objects) {
+      try {
+        const x = Number(object.x())
+        const y = Number(object.y())
+        const width = Number(object.width())
+        const height = Number(object.height())
+        if (![x, y, width, height].every((value) => Number.isFinite(value))) continue
+        right = Math.max(right, x + width)
+        bottom = Math.max(bottom, y + height)
+      } catch {
+        // a floating object with different geometry accessors: ignore it
+      }
+    }
+  }
+  return { right, bottom }
+}
+
 /** Render pass 1: fit content to a generous host, then read the used-box rect. */
 async function measureWorkbook(
   GC: Gc,
@@ -202,10 +236,15 @@ async function measureWorkbook(
     if (rect === null || rect === undefined || typeof rect.x !== 'number' || Number.isNaN(rect.x)) {
       throw new SjsWorkerError('无法测量工作表内容范围（getCellRect 无效）', 'SJS_PNG_RENDER_FAILED')
     }
+    // Floating objects (charts, shapes, pictures) are painted at their own
+    // worksheet coordinates and routinely sit outside the used cell range.
+    // Sizing the canvas to the cells alone silently cropped them out of the
+    // snapshot, so the content box is the union of both.
+    const extent = floatingObjectExtent(sheet)
     return {
       used,
-      contentWidth: rect.x + rect.width,
-      contentHeight: rect.y + rect.height,
+      contentWidth: Math.max(rect.x + rect.width, extent.right),
+      contentHeight: Math.max(rect.y + rect.height, extent.bottom),
       sheetName,
     }
   } catch (error) {
