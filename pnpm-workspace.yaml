@@ -1,0 +1,6 @@
+# pnpm settings live here (the `pnpm` package.json field is no longer read).
+# canvas ships a native binding fetched by its install script; esbuild's script
+# is optional when the platform binary package is present, but allow it too.
+allowBuilds:
+  canvas: true
+  esbuild: true

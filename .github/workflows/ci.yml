@@ -1,0 +1,40 @@
+name: CI
+
+# Gate for task 7: typecheck → public-dependency verify → build → worker-smoke →
+# tool-smoke → pack-content verify → "install the tarball and boot it" smoke.
+# All headless (jsdom + node-canvas, no display). Ubuntu-latest ships DejaVu
+# fonts, which satisfy the PDF/PNG guards; no CJK font install is required for
+# gating (CJK glyph fidelity is verified on the dev machine / E2E checklist).
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm (version from packageManager)
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        # Build-script approvals for canvas/esbuild come from pnpm-workspace.yaml
+        # (allowBuilds), which is committed with the repo.
+
+      - name: Full verification chain
+        run: pnpm run ci

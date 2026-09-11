@@ -1,0 +1,68 @@
+{
+  "name": "dsh-spreadjs-excel",
+  "version": "0.1.0",
+  "description": "SpreadJS spreadsheets for DeepSeek Harness (DSH): import/export Excel, formula recalculation, execution fallback and PDF export through headless workers.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "files": [
+    "lib",
+    "artifacts",
+    "skills",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@11.18.0",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:worker": "node scripts/build.mjs worker",
+    "typecheck": "tsc --noEmit",
+    "verify:public-dependencies": "node scripts/verify-public-runtime-dependencies.mjs",
+    "verify:pack": "node scripts/verify-pack.mjs",
+    "test:worker": "node test/worker-smoke.mjs",
+    "test:tool": "node test/tool-smoke.mjs",
+    "test:pack": "node scripts/smoke-from-pack.mjs",
+    "test:all": "pnpm run typecheck && pnpm run build && node test/worker-smoke.mjs && node test/tool-smoke.mjs",
+    "ci": "pnpm run typecheck && pnpm run verify:public-dependencies && pnpm run build && pnpm run test:worker && pnpm run test:tool && pnpm run verify:pack && pnpm run test:pack",
+    "prepack": "node scripts/build.mjs",
+    "prepublishOnly": "pnpm run ci"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2 || 0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.1-rc.2 || 0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.1.1-rc.2 || 0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2 || 0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-attachment": "0.1.2-rc.1",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@grapecity-software/spread-sheets": "^19.1.4",
+    "@grapecity-software/spread-sheets-io": "^19.1.4",
+    "@grapecity-software/spread-sheets-pdf": "^19.1.4",
+    "@grapecity-software/spread-sheets-print": "^19.1.4",
+    "canvas": "^3.2.3",
+    "jsdom": "^30.0.1"
+  }
+}
