@@ -178,6 +178,20 @@ engine would discard the write and report success, which is why the plugin
 guards it.) The ceiling is the spreadsheet's own: 1,048,576 rows × 16,384
 columns.
 
+**Bulk writes are already batched for you.** The engine suspends repainting and
+change events around your whole script — roughly 1.9× faster on a 20k-row fill,
+and the gap widens with size — so do **not** reach for `suspendPaint()` yourself.
+Calculation is deliberately left running, because a formula read while calculation
+is suspended returns `null` and these scripts verify themselves by reading values
+back. For a large **write-only** pass you may suspend it explicitly for roughly
+another 2×, then resume before you read anything:
+
+```js
+spread.suspendCalcService()
+for (let r = 0; r < 50000; r++) { s.setValue(r, 0, r); s.setFormula(r, 1, '=A' + (r + 1) + '*2') }
+spread.resumeCalcService()   // a formula read before this line returns null
+```
+
 Operations that name the **same workbook run one at a time, in arrival order**;
 different workbooks still run in parallel. Issue parallel `sjs_execute` calls
 against one workbook freely — each sees the previous one's result.

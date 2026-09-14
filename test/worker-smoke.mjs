@@ -377,11 +377,20 @@ const run = async () => {
       op: 'execute',
       sourcePath: file,
       workspaceRoot: dir,
-      code: 'const s = sheet(); for (let i = 0; i < 20000; i++) { s.setValue(i, 0, i); s.setValue(i, 1, "名称" + i) } return { rows: s.getRowCount() }',
+      code: [
+        'const s = sheet()',
+        'for (let i = 0; i < 20000; i++) { s.setValue(i, 0, i); s.setValue(i, 1, "名称" + i) }',
+        's.setFormula(20000, 0, "=SUM(A1:A20000)")',
+        // Read the formula back INSIDE the script: the engine batches paint and
+        // events for speed, and this catches anyone extending that to suspend
+        // calculation, which would make every in-script formula read null.
+        'return { rows: s.getRowCount(), sum: s.getValue(20000, 0) }',
+      ].join('\n'),
     })
     const elapsed = Date.now() - started
     assertOk(envelope, 'bulk write succeeds')
     assert(envelope.result.rows >= 20000, `sheet grew to hold the rows (${envelope.result.rows})`)
+    assert(envelope.result.sum === (19999 * 20000) / 2, `a formula set in a batched script reads back correctly (${envelope.result.sum})`)
     assert(elapsed < 50_000, `20k-row write finished in ${elapsed}ms (budget 60000ms)`)
   })()
 

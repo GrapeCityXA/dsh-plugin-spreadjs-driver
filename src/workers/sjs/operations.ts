@@ -609,14 +609,52 @@ async function runUserCode(code: string, spread: Workbook, GC: Gc, workspaceRoot
     snapshot: () => summarizeSpread(spread, GC),
   })
   const source = `(async () => {\n${code}\n})()`
-  let promise: unknown
+  const suspended = beginBatch(spread)
   try {
-    promise = runInContext(source, context)
-  } catch (error) {
-    throw new SjsWorkerError(`syntax error: ${errorMessage(error)}`, 'SJS_SCRIPT_ERROR')
+    let promise: unknown
+    try {
+      promise = runInContext(source, context)
+    } catch (error) {
+      throw new SjsWorkerError(`syntax error: ${errorMessage(error)}`, 'SJS_SCRIPT_ERROR')
+    }
+    return isPromiseLike(promise) ? await promise : promise
+  } finally {
+    endBatch(spread, suspended)
   }
-  if (isPromiseLike(promise)) return await promise
-  return promise
+}
+
+/**
+ * Put the workbook in batch mode for the duration of a script: repainting the
+ * grid and dispatching change events per write costs real time on a fill (a
+ * 20k-row script measured ~1.9x slower without this, and the gap widens with
+ * size). Both are presentation-side only — stored values are identical either
+ * way — so batching is invisible to results and safe to apply unconditionally.
+ *
+ * Calculation is deliberately NOT suspended: a formula read while calculation is
+ * suspended returns `null`, and these scripts verify their own work by reading
+ * values back. A script doing a large write-only pass may suspend it itself for
+ * a further ~2x, resuming before it reads any formula.
+ */
+function beginBatch(spread: Workbook): { readonly paint: boolean; readonly events: boolean } {
+  const canPaint = typeof (spread as { suspendPaint?: unknown }).suspendPaint === 'function'
+  const canEvents = typeof (spread as { suspendEvent?: unknown }).suspendEvent === 'function'
+  try {
+    if (canPaint) (spread as unknown as { suspendPaint: () => void }).suspendPaint()
+    if (canEvents) (spread as unknown as { suspendEvent: () => void }).suspendEvent()
+  } catch {
+    // A workbook that refuses batching still runs; it is only slower.
+  }
+  return { paint: canPaint, events: canEvents }
+}
+
+/** Undo {@link beginBatch}; resume order mirrors the suspend order. */
+function endBatch(spread: Workbook, suspended: { readonly paint: boolean; readonly events: boolean }): void {
+  try {
+    if (suspended.events) (spread as unknown as { resumeEvent: () => void }).resumeEvent()
+    if (suspended.paint) (spread as unknown as { resumePaint: () => void }).resumePaint()
+  } catch {
+    // Resuming is best-effort inside a one-shot process that exits next.
+  }
 }
 
 /** Materialize the code's return value or, when omitted, the workbook summary. */
