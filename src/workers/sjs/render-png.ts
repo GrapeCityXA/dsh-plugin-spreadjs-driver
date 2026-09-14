@@ -54,9 +54,14 @@ export interface PngRenderResult {
 /** Max raster dimensions; beyond this the screenshot clips (reported as `clipped`). */
 const MAX_WIDTH = 2600
 const MAX_HEIGHT = 2200
-/** Measure-render host size (generous; actual size comes from getCellRect). */
-const MEASURE_WIDTH = 1400
-const MEASURE_HEIGHT = 900
+/** Fallbacks for geometry SpreadJS does not report (headless sheet defaults). */
+const DEFAULT_COLUMN_WIDTH = 62
+const DEFAULT_ROW_HEIGHT = 20
+const DEFAULT_ROW_HEADER_WIDTH = 40
+const DEFAULT_COLUMN_HEADER_HEIGHT = 20
+/** Measure-pass host size; only needed to build layout, never measured from. */
+const MEASURE_WIDTH = 900
+const MEASURE_HEIGHT = 600
 /** Canvas is host client size minus one scrollbar (18px) on each axis. */
 const SCROLLBAR = 18
 /** Comfort padding so the last column/row is not flush against the edge. */
@@ -106,29 +111,23 @@ export async function renderWorkbookToPng(
     )
   }
 
-  // Render 1: measure the used content box in host pixel coordinates.
-  const measure = await measureWorkbook(GC, window, jsonFor(), font)
+  // Measure the content box from the model (no viewport limit).
+  const measure = measureContent(window, GC, jsonFor())
 
   // Fit the host so its canvas (= host − scrollbar) holds the content exactly.
   // Only a truly empty sheet falls back to the fixed viewport; content uses its
   // own box (a large fallback floor would otherwise pad real sheets with blank).
-  const contentW = measure.contentWidth
-  const contentH = measure.contentHeight
+  // Content past the raster ceiling clips instead of failing: a cropped picture
+  // of a huge sheet is useful, an error is not.
+  const contentW = Math.ceil(measure.contentWidth)
+  const contentH = Math.ceil(measure.contentHeight)
   const clipped = contentW > MAX_WIDTH - SCROLLBAR - CONTENT_PAD || contentH > MAX_HEIGHT - SCROLLBAR - CONTENT_PAD
-  let hostW: number
-  let hostH: number
-  if (measure.used === null) {
-    // A sheet with no used cell range (a pivot layout, or a sheet carrying only
-    // floating objects) still has content: the fixed viewport is a floor, not a
-    // ceiling, so anything beyond it must extend the canvas.
-    hostW = Math.min(MAX_WIDTH, Math.max(EMPTY_WIDTH, Math.ceil(contentW) + SCROLLBAR + CONTENT_PAD))
-    hostH = Math.min(MAX_HEIGHT, Math.max(EMPTY_HEIGHT, Math.ceil(contentH) + SCROLLBAR + CONTENT_PAD))
-  } else {
-    hostW = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.ceil(contentW) + SCROLLBAR + CONTENT_PAD))
-    hostH = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.ceil(contentH) + SCROLLBAR + CONTENT_PAD))
-  }
+  const floorW = measure.used === null ? EMPTY_WIDTH : MIN_WIDTH
+  const floorH = measure.used === null ? EMPTY_HEIGHT : MIN_HEIGHT
+  const hostW = Math.min(MAX_WIDTH, Math.max(floorW, contentW + SCROLLBAR + CONTENT_PAD))
+  const hostH = Math.min(MAX_HEIGHT, Math.max(floorH, contentH + SCROLLBAR + CONTENT_PAD))
 
-  // Render 2: capture at the exact fitted size.
+  // Capture at the exact fitted size.
   const { png, canvasWidth, canvasHeight } = await captureWorkbook(GC, window, jsonFor(), hostW, hostH, font, measure)
   return {
     png,
@@ -213,48 +212,44 @@ function floatingObjectExtent(sheet: any): { right: number; bottom: number } {
   return { right, bottom }
 }
 
-/** Render pass 1: fit content to a generous host, then read the used-box rect. */
-async function measureWorkbook(
-  GC: Gc,
-  window: any,
-  json: unknown,
-  font: string,
-): Promise<Measure> {
+/**
+ * Measure the content box of the active sheet without rendering it.
+ *
+ * The box is computed from the model — the used range's column widths and row
+ * heights plus the headers — instead of asking a rendered host for a cell rect.
+ * A rendered measurement only answers for cells inside the host's own viewport:
+ * once content outgrew it, `getCellRect` returned an unusable rect and the whole
+ * screenshot failed, so any sheet larger than the probe host could not be
+ * captured at all. Model arithmetic has no viewport and is exact.
+ *
+ * Floating objects (charts, shapes, slicers, pictures) are painted at their own
+ * worksheet coordinates and routinely sit outside the used range, so the box is
+ * the union of both.
+ */
+function measureContent(window: any, GC: Gc, json: unknown): Measure {
+  // The host is required: a headless Workbook needs a DOM host to build its
+  // layout, and constructing one without it leaves the engine in a state where
+  // the later capture pass fails. The host size is irrelevant here because the
+  // box comes from the model, not from a rendered rect.
   const host = makeHost(window, MEASURE_WIDTH, MEASURE_HEIGHT)
   const spread = new GC.Spread.Sheets.Workbook(host, { sheetCount: 0 })
   try {
     spread.fromJSON(json)
     const sheet = spread.getActiveSheet()
     const sheetName = typeof sheet?.name === 'function' ? String(sheet.name() ?? '') : ''
-    const used = sheet === undefined || sheet === null ? null : usedRangeOf(sheet, GC)
-    if (sheet !== undefined && sheet !== null && sheet.refresh !== undefined) sheet.refresh()
-    spread.refresh()
-    await sleep(160) // let the first paint settle so getCellRect is measurable
-    if (used === null || sheet === undefined || sheet === null) {
-      // No used cells — but the sheet may still carry floating objects.
-      const extent = sheet === undefined || sheet === null ? { right: 0, bottom: 0 } : floatingObjectExtent(sheet)
-      return { used: null, contentWidth: extent.right, contentHeight: extent.bottom, sheetName }
-    }
-    const lastRow = used.row + used.rowCount - 1
-    const lastCol = used.col + used.colCount - 1
-    const rect = sheet.getCellRect(lastRow, lastCol)
-    if (rect === null || rect === undefined || typeof rect.x !== 'number' || Number.isNaN(rect.x)) {
-      throw new SjsWorkerError('无法测量工作表内容范围（getCellRect 无效）', 'SJS_PNG_RENDER_FAILED')
-    }
-    // Floating objects (charts, shapes, pictures) are painted at their own
-    // worksheet coordinates and routinely sit outside the used cell range.
-    // Sizing the canvas to the cells alone silently cropped them out of the
-    // snapshot, so the content box is the union of both.
-    const extent = floatingObjectExtent(sheet)
+    if (sheet === undefined || sheet === null) return { used: null, contentWidth: 0, contentHeight: 0, sheetName }
+    const used = usedRangeOf(sheet, GC)
+    const cells = used === null ? { width: 0, height: 0 } : cellExtent(sheet, GC, used)
+    const floating = floatingObjectExtent(sheet)
     return {
       used,
-      contentWidth: Math.max(rect.x + rect.width, extent.right),
-      contentHeight: Math.max(rect.y + rect.height, extent.bottom),
+      contentWidth: Math.max(cells.width, floating.right),
+      contentHeight: Math.max(cells.height, floating.bottom),
       sheetName,
     }
   } catch (error) {
     if (error instanceof SjsWorkerError) throw error
-    throw new SjsWorkerError(`测量工作表失败: ${errorMessage(error)}`, 'SJS_PNG_RENDER_FAILED')
+    throw new SjsWorkerError(`无法测量工作表内容（${errorMessage(error)}）`, 'SJS_PNG_RENDER_FAILED')
   } finally {
     try {
       spread.destroy()
@@ -263,6 +258,65 @@ async function measureWorkbook(
     }
     host.remove()
   }
+}
+
+/**
+ * Pixel size of the used cell block including the row/column headers the canvas
+ * paints. Hidden rows and columns occupy no space, and a width/height the model
+ * does not report falls back to the sheet default.
+ */
+function cellExtent(
+  sheet: any,
+  GC: Gc,
+  used: { row: number; rowCount: number; col: number; colCount: number },
+): { width: number; height: number } {
+  const area = GC?.Spread?.Sheets?.SheetArea
+  const hidden = (method: string, index: number): boolean => {
+    try {
+      return sheet[method] !== undefined && sheet[method](index) === false
+    } catch {
+      return false
+    }
+  }
+  const size = (method: string, index: number, fallback: number): number => {
+    try {
+      const value = sheet[method](index, area?.viewport)
+      return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  let columns = 0
+  for (let col = used.col; col < used.col + used.colCount; col++) {
+    if (hidden('getColumnVisible', col)) continue
+    columns += size('getColumnWidth', col, DEFAULT_COLUMN_WIDTH)
+  }
+  let rows = 0
+  for (let row = used.row; row < used.row + used.rowCount; row++) {
+    if (hidden('getRowVisible', row)) continue
+    rows += size('getRowHeight', row, DEFAULT_ROW_HEIGHT)
+  }
+
+  const header = (method: string, fallback: number): number => {
+    try {
+      const value = sheet[method](0, area?.rowHeader)
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback
+    } catch {
+      return fallback
+    }
+  }
+  const rowHeaderWidth = header('getColumnWidth', DEFAULT_ROW_HEADER_WIDTH)
+  const columnHeaderHeight = ((): number => {
+    try {
+      const value = sheet.getRowHeight(0, area?.colHeader)
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : DEFAULT_COLUMN_HEADER_HEIGHT
+    } catch {
+      return DEFAULT_COLUMN_HEADER_HEIGHT
+    }
+  })()
+
+  return { width: rowHeaderWidth + columns, height: columnHeaderHeight + rows }
 }
 
 /** Render pass 2: constructor-bind a host of the measured size and capture PNG. */

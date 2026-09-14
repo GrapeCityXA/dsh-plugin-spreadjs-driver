@@ -365,6 +365,52 @@ const run = async () => {
     assert(envelope.result.width >= 1100, `png covers the slicer past the default viewport (width ${envelope.result.width})`)
   })()
 
+  await step('screenshot measures content exactly and clips past the raster ceiling', async () => {
+    // Content size comes from the model (column widths / row heights + headers),
+    // so a sheet larger than any probe viewport still measures. Past the ceiling
+    // the shot clips with a flag instead of failing outright.
+    const book = join(dir, 'measure.ssjson')
+    const newEnv = await runWorker({ op: 'new', targetPath: book })
+    assertOk(newEnv.envelope, 'measure workbook created')
+
+    // Ask the engine for the width the model implies, then require the render to
+    // agree — the two must not drift.
+    const measure = [
+      'const s = sheet()',
+      'for (let c = 0; c < 10; c++) { s.setColumnWidth(c, 150); s.setValue(0, c, "列" + c) }',
+      'const used = s.getUsedRange(GC.Spread.Sheets.UsedRangeType.data | GC.Spread.Sheets.UsedRangeType.formula)',
+      'let w = 0',
+      'for (let c = used.col; c < used.col + used.colCount; c++) w += s.getColumnWidth(c)',
+      'return { content: s.getColumnWidth(0, GC.Spread.Sheets.SheetArea.rowHeader) + w }',
+    ].join('\n')
+    const measured = await runWorker({ op: 'execute', sourcePath: book, workspaceRoot: dir, code: measure })
+    assertOk(measured.envelope, 'measure execute')
+
+    const exact = await runWorker({ op: 'screenshot', sourcePath: book, outputPath: join(dir, 'exact.png'), format: 'png' })
+    assertOk(exact.envelope, 'exact-size png renders')
+    assert(exact.envelope.result.clipped === undefined, 'an in-budget sheet is not flagged clipped')
+    // The fitted host adds the 8px pad; the canvas is the host minus a scrollbar.
+    assert(
+      exact.envelope.result.width === measured.envelope.result.content + 8,
+      `render width ${exact.envelope.result.width} matches the measured ${measured.envelope.result.content}`,
+    )
+
+    const grow = [
+      'const s = sheet()',
+      'for (let c = 10; c < 40; c++) { s.setColumnWidth(c, 150); s.setValue(0, c, "宽" + c) }',
+      'for (let r = 1; r < 300; r++) s.setValue(r, 0, "行" + r)',
+      'return "ok"',
+    ].join('\n')
+    const grown = await runWorker({ op: 'execute', sourcePath: book, workspaceRoot: dir, code: grow })
+    assertOk(grown.envelope, 'oversize prep execute')
+
+    const clipped = await runWorker({ op: 'screenshot', sourcePath: book, outputPath: join(dir, 'clipped.png'), format: 'png' })
+    assertOk(clipped.envelope, 'an oversize sheet still renders')
+    assert(clipped.envelope.result.clipped === true, 'oversize sheet is flagged clipped')
+    assert(clipped.envelope.result.width <= 2600, `clipped width stays in budget (${clipped.envelope.result.width})`)
+    assert(clipped.envelope.result.height <= 2200, `clipped height stays in budget (${clipped.envelope.result.height})`)
+  })()
+
   await step('screenshot pdf snapshot writes a %PDF file', async () => {
     const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pdfSnapshot, format: 'pdf' })
     if (!envelope.ok) {

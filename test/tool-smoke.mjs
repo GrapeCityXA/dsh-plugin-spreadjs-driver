@@ -327,6 +327,75 @@ await step('sjs_execute classifies a thrown script error', async () => {
   assertErrorCode(result, 'SJS_SCRIPT_ERROR', 'thrown script error')
 })
 
+await step('concurrent edits to one workbook all survive', async () => {
+  // Each edit is a whole read-modify-write in its own process, so overlapping
+  // edits used to overwrite each other while every call still reported success.
+  // A model parallelizing tool calls hits this immediately.
+  const file = 'concurrent.ssjson'
+  okJson(await callTool('sjs_new', { file }), 'sjs_new concurrent')
+
+  const edits = Array.from({ length: 6 }, (_, i) =>
+    toolContext.tools.execute({
+      signal: new AbortController().signal,
+      callId: ToolCallId(`tool-smoke-concurrent-${i}`),
+      name: 'sjs_execute',
+      arguments: { file, code: `const s = sheet(); s.setValue(${i + 1}, 0, 'w${i}'); return 'w${i}'` },
+      agent,
+    }),
+  )
+  const results = await Promise.all(edits)
+  results.forEach((result, i) => {
+    assert(okJson(result, `concurrent edit ${i}`).ok === true, `concurrent edit ${i} reported ok`)
+  })
+
+  const read = okJson(
+    await callTool('sjs_execute', {
+      file,
+      code: 'const s = sheet(); const out = []; for (let r = 1; r <= 6; r++) out.push(s.getValue(r, 0)); return out',
+    }),
+    'read back after concurrent edits',
+  )
+  const values = read.result
+  assert(
+    Array.isArray(values) && values.every((value, i) => value === `w${i}`),
+    `every concurrent edit survived: ${JSON.stringify(values)}`,
+  )
+})
+
+await step('sjs_execute grows the sheet instead of dropping out-of-range writes', async () => {
+  // A fresh worksheet is 200x20 and out-of-range writes vanish silently, so a
+  // model writing 5000 rows would see success and lose the data.
+  const file = 'grow.ssjson'
+  okJson(await callTool('sjs_new', { file }), 'sjs_new grow')
+  const write = okJson(
+    await callTool('sjs_execute', {
+      file,
+      code: [
+        'const s = sheet()',
+        'for (let r = 0; r < 5000; r++) s.setValue(r, 0, r)',
+        'for (let c = 0; c < 40; c++) s.setValue(0, c, c)',
+        's.setFormula(5000, 0, "=SUM(A1:A5000)")',
+        'return { v4999: s.getValue(4999, 0), last: s.getValue(0, 39), sum: s.getValue(5000, 0) }',
+      ].join('\n'),
+    }),
+    'grow write',
+  ).result
+  assert(write.v4999 === 4999, `row 4999 survived: ${JSON.stringify(write)}`)
+  assert(write.last === 39, `column 39 survived: ${JSON.stringify(write)}`)
+  assert(write.sum === (4999 * 5000) / 2, `formula over the grown range evaluates: ${JSON.stringify(write)}`)
+})
+
+await step('sjs_execute reports an unusable sheet name with the offending characters', async () => {
+  const result = await callTool('sjs_execute', {
+    file: 'ledger.ssjson',
+    code: "const s = sheet(); s.name('A/B'); return s.name()",
+  })
+  const text = result.content.map((b) => (b.type === 'text' ? b.text : '')).join('')
+  assert(result.isError === true, 'an illegal sheet name is an error')
+  assert(text.includes('SJS_SHEET_NAME_INVALID'), `error names the code: ${text.slice(0, 160)}`)
+  assert(text.includes('/'), `error names the offending character: ${text.slice(0, 160)}`)
+})
+
 await step('sjs_import rejects an unsupported source extension', async () => {
   const result = await callTool('sjs_import', { file: 'notes.txt', target: 'nope.ssjson' })
   assertErrorCode(result, 'INVALID_FILE_PATH', 'unsupported import source')

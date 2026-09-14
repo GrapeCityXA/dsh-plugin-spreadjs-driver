@@ -42,7 +42,7 @@ workspace.
 | Inspect | `sjs_status` | List sheets, dimensions and used ranges of a workbook (metadata, not cell values). |
 | Write | `sjs_execute` | Run SpreadJS JavaScript against one workbook; the file is saved afterwards. |
 | Verify | `sjs_execute` | Return the cells you need, or call `snapshot()` for the sheet summary. |
-| Verify | `sjs_screenshot` | Render a visual snapshot: `png` (pixel render of the active sheet) or `pdf`. |
+| Verify | `sjs_screenshot` | Render a visual snapshot: `png` (pixel render of the active sheet) or `pdf`. A `png` result reports `clipped: true` when the sheet exceeded the raster ceiling (2600×2200) and the image is a crop. |
 | Deliver | `sjs_export` | Export a workbook to `.xlsx`, `.csv`, `.ssjson` (canonical copy) or `.pdf`; output never overwrites. |
 
 ## Recommended flow
@@ -137,6 +137,16 @@ scope:
 - `console`, and `snapshot()` — returns the sheet summary (`sheets` with
   `name`, `rowCount`, `columnCount`, `usedRange`, plus `activeSheet`).
 
+Writing past a sheet's current row/column count **grows the sheet** — you do not
+have to call `setRowCount` first, and data is never silently dropped. (A bare
+engine would discard the write and report success, which is why the plugin
+guards it.) The ceiling is the spreadsheet's own: 1,048,576 rows × 16,384
+columns.
+
+Operations that name the **same workbook run one at a time, in arrival order**;
+different workbooks still run in parallel. Issue parallel `sjs_execute` calls
+against one workbook freely — each sees the previous one's result.
+
 There is **no `require`, no `process`, no `fs`, no DOM**. Common calls:
 `sheet().setValue(r, c, v)`, `.getValue(r, c)`, `.setFormula(r, c, '=SUM(…)')`,
 `.setColumnWidth(c, w)` and `.setRowHeight(r, h)` (both in **pixels** — see the
@@ -209,6 +219,8 @@ not free text.
 | `CODE_FILE_READ_FAILED` | `codeFile` unreadable | Fix the file path. |
 | `SJS_SCRIPT_ERROR` | `sjs_execute` threw or had a syntax error | Read the message, fix the code, re-run. Often an API you guessed — verify it first. |
 | `SJS_SHEET_NOT_FOUND` | Named sheet absent (also raised by `sheet(name)` with no match) | Confirm the real sheet name via `sjs_status`. |
+| `SJS_SHEET_NAME_INVALID` | The name has a character Excel forbids (`: \ / ? * [ ]`), is empty, is over 31 characters, or starts/ends with `'` | Pick a name made of the offending characters' absence — the message names them. |
+| `SJS_SHEET_LIMIT_EXCEEDED` | A write targets a row past 1,048,576 or a column past 16,384 | That is the spreadsheet ceiling; write less, or split across sheets. |
 | `SJS_RESULT_TOO_LARGE`, `SJS_NON_SERIALIZABLE_RESULT` | Return value too big or not JSON | Return a compact summary or call `snapshot()`. |
 | `SJS_UNSUPPORTED_IMPORT_FORMAT` | The engine cannot convert this source extension (Excel family variants beyond `.xlsx` reach the worker without a converter) | Convert the source to `.xlsx`/`.csv` first, then import. |
 | `SJS_FILE_READ_FAILED`, `SJS_INVALID_SSJSON`, `SJS_FILE_WRITE_FAILED` | File-level IO / not a valid workbook | Correct the path/input; regenerate the `.ssjson` if corrupt. |

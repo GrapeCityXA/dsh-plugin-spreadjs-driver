@@ -67,6 +67,8 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 - Screenshot `png` text is re-rendered in one readable CJK-capable font, so per-cell font/weight variety is flattened **in the image only**; the workbook file is never modified by a screenshot.
 - Worktrees support `create`/`list` in this release; approval (`merge`/`discard`) is a later phase.
 - `sjs_execute` can drive charts, shapes, slicers and pivot tables (the `shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` packs ship with the plugin); a `png` snapshot covers floating objects even when they sit outside the used cell range or on a sheet with no used cells (a pivot layout).
+- Out-of-range writes grow the sheet instead of being dropped, and operations naming the same workbook run serially, so parallel tool calls cannot lose each other's edits.
+- A `png` result carries `clipped: true` when the sheet is larger than the 2600×2200 raster ceiling; the image is then a crop rather than an error.
 
 ## Development
 

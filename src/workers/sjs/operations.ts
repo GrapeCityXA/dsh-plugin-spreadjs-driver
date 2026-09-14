@@ -447,7 +447,127 @@ async function persistSpread(targetPath: string, spread: Workbook): Promise<void
 }
 
 /** Run user code as an async function body in an isolated vm context. */
+/**
+ * Guard the Worksheet class against SpreadJS's two silent-data-loss traps.
+ *
+ * 1. A fresh worksheet is 200 rows x 20 columns, and `setValue`/`setFormula`/
+ *    `setArray` beyond those bounds are **silently dropped** — no throw, no
+ *    warning, and a read-back of early rows still looks correct. Writing more
+ *    rows than the default is ordinary usage, so the guards grow the sheet to
+ *    fit the write instead (and throw loudly past the engine's own ceiling,
+ *    which stays far better than dropping data).
+ * 2. Excel and SpreadJS both reject `: \ / ? * [ ]` in a sheet name, but the
+ *    engine reports only "Not supported exception", which a model cannot act
+ *    on. The name setter validates up front and names the offending characters.
+ *
+ * Installed once per worker process, on the prototype, so code that reaches a
+ * sheet through `spread.getSheet(i)` is covered as well as the `sheet()` helper.
+ */
+function installWorksheetGuards(GC: Gc): void {
+  const prototype = GC?.Spread?.Sheets?.Worksheet?.prototype
+  if (prototype === undefined || prototype === null) return
+  if (prototype.__sjsGuardsInstalled === true) return
+  try {
+    Object.defineProperty(prototype, '__sjsGuardsInstalled', { value: true, enumerable: false })
+  } catch {
+    // a frozen prototype would defeat the guards entirely; let the write fail loudly
+  }
+
+  const MAX_ROWS = 1_048_576
+  const MAX_COLUMNS = 16_384
+
+  const grow = (sheet: any, row: unknown, col: unknown): void => {
+    if (typeof row === 'number' && Number.isFinite(row) && row >= 0) {
+      const rows = sheet.getRowCount()
+      if (row >= rows) {
+        if (row >= MAX_ROWS) {
+          throw new SjsWorkerError(
+            `row ${String(row)} is past the spreadsheet limit of ${String(MAX_ROWS)} rows`,
+            'SJS_SHEET_LIMIT_EXCEEDED',
+          )
+        }
+        sheet.setRowCount(row + 1)
+      }
+    }
+    if (typeof col === 'number' && Number.isFinite(col) && col >= 0) {
+      const columns = sheet.getColumnCount()
+      if (col >= columns) {
+        if (col >= MAX_COLUMNS) {
+          throw new SjsWorkerError(
+            `column ${String(col)} is past the spreadsheet limit of ${String(MAX_COLUMNS)} columns`,
+            'SJS_SHEET_LIMIT_EXCEEDED',
+          )
+        }
+        sheet.setColumnCount(col + 1)
+      }
+    }
+  }
+
+  for (const method of ['setValue', 'setFormula'] as const) {
+    const original = prototype[method]
+    if (typeof original !== 'function') continue
+    prototype[method] = function guarded(this: any, row: unknown, col: unknown, ...rest: unknown[]): unknown {
+      grow(this, row, col)
+      return original.call(this, row, col, ...rest)
+    }
+  }
+
+  const originalSetArray = prototype.setArray
+  if (typeof originalSetArray === 'function') {
+    prototype.setArray = function guardedSetArray(this: any, row: unknown, col: unknown, values: unknown, ...rest: unknown[]): unknown {
+      const height = Array.isArray(values) ? values.length : 0
+      const width = Array.isArray(values) && Array.isArray(values[0]) ? (values[0] as unknown[]).length : 1
+      if (height > 0 && width > 0) {
+        grow(this, (typeof row === 'number' ? row : 0) + height - 1, (typeof col === 'number' ? col : 0) + width - 1)
+      }
+      return originalSetArray.call(this, row, col, values, ...rest)
+    }
+  }
+
+  const originalName = prototype.name
+  if (typeof originalName === 'function') {
+    // `name()` is a getter and `name(value)` the setter, told apart by the
+    // argument COUNT — so forward the real arguments verbatim. Calling
+    // `original.call(this, undefined)` would look like a set-to-undefined and
+    // the engine rejects it with "Not supported exception".
+    prototype.name = function guardedName(this: any, ...args: unknown[]): unknown {
+      if (args.length > 0) assertUsableSheetName(args[0])
+      return originalName.apply(this, args)
+    }
+  }
+}
+
+/** Reject sheet names Excel itself refuses, with a message that says why. */
+function assertUsableSheetName(value: unknown): void {
+  if (typeof value !== 'string') {
+    throw new SjsWorkerError(`sheet name must be a string, got ${typeof value}`, 'SJS_SHEET_NAME_INVALID')
+  }
+  const illegal = [...new Set([...value].filter((character) => ':\\/?*[]'.includes(character)))]
+  if (illegal.length > 0) {
+    throw new SjsWorkerError(
+      `sheet name ${JSON.stringify(value)} contains character(s) Excel does not allow in a sheet name: ${illegal.join(' ')} (also avoid : \\ / ? * [ ])`,
+      'SJS_SHEET_NAME_INVALID',
+    )
+  }
+  if (value.length === 0) {
+    throw new SjsWorkerError('sheet name must not be empty', 'SJS_SHEET_NAME_INVALID')
+  }
+  if (value.length > 31) {
+    throw new SjsWorkerError(
+      `sheet name ${JSON.stringify(value)} is ${String(value.length)} characters; Excel allows at most 31`,
+      'SJS_SHEET_NAME_INVALID',
+    )
+  }
+  if (value.startsWith("'") || value.endsWith("'")) {
+    throw new SjsWorkerError(
+      `sheet name ${JSON.stringify(value)} must not start or end with an apostrophe`,
+      'SJS_SHEET_NAME_INVALID',
+    )
+  }
+}
+
 async function runUserCode(code: string, spread: Workbook, GC: Gc, workspaceRoot: string): Promise<unknown> {
+  installWorksheetGuards(GC)
   const sheet = (name?: string): unknown => {
     // Resolve by scanning indices: headless SpreadJS does not register the
     // by-name dictionary on fromJSON, so getSheet(name) returns undefined even
