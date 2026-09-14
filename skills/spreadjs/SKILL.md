@@ -1,6 +1,6 @@
 ---
 name: spreadjs
-description: Create, inspect, edit, import, export and screenshot real Excel workbooks (.xlsx) through the sjs_* DSH tools. Use proactively for any spreadsheet task — building or editing tables, cells, formulas, sheets, formatting; reading or writing .xlsx / .csv files; producing a .pdf or .png visual snapshot; or running SpreadJS JavaScript through sjs_execute for anything the narrow tools cannot express.
+description: Create, inspect, edit, import, export and screenshot real Excel workbooks (.xlsx) through the sjs_* DSH tools, and look up any SpreadJS API in the authoritative reference bundled with this skill. Use proactively for any spreadsheet task — building or editing tables, cells, formulas, sheets, formatting; reading or writing .xlsx / .csv files; producing a .pdf or .png visual snapshot; or running SpreadJS JavaScript through sjs_execute for anything the narrow tools cannot express. Load it also to answer a SpreadJS API question from a reliable source rather than from memory.
 ---
 
 # Spreadsheets (Excel .xlsx)
@@ -264,36 +264,63 @@ s.setFormula(5, 1, '=SUM(B2:B5)')
 return { total: s.getValue(5, 1), lastRow: s.getRowCount(), sheet: s.name() }
 ```
 
-## Unknown SpreadJS API: verify before writing code
+## Unknown SpreadJS API: look it up, never guess
 
 **Your training memory of the SpreadJS API is not reliable** — guessing a name or
-signature produces `SJS_SCRIPT_ERROR` and costs a round trip. The official
-reference is authoritative, and its pages have **deterministic URLs built from the
-symbol's full name**, so you can check any symbol without searching for it:
+signature produces `SJS_SCRIPT_ERROR` and costs a round trip. The complete
+official API reference ships with this skill, so checking a symbol is one local
+file read — do it *before* writing a call whose name, parameters, enum members or
+return shape you have not already confirmed in this session.
+
+**Where it is.** Under this skill's resource directory (given to you with this
+body) there is a `reference/<version>/` tree holding the whole reference as
+markdown, split exactly the way the docs site is:
 
 ```
-https://demo.grapecity.com.cn/spreadjs/help/api/classes/<Full.Name>    a class
-https://demo.grapecity.com.cn/spreadjs/help/api/enums/<Full.Name>      an enum
-https://demo.grapecity.com.cn/spreadjs/help/api/modules/<Full.Name>    a namespace
+reference/<version>/classes/     one file per class      <Full.Name>.md
+reference/<version>/enums/       one file per enum       <Full.Name>.md
+reference/<version>/modules/     one file per namespace  <Full.Name>.md
+reference/<version>/interfaces/  …plus designer/, excelio/, collaboration/
 ```
 
-Fetch before you write whenever the name, parameters, enum members or return
-shape is not something you have already confirmed in this session:
+**The file name is the symbol's full name**, so you do not need to search — glob
+for it. The reference base is available to your file tools; for example:
 
 ```
-GC.Spread.Sheets.Charts.ChartCollection
-  → .../api/classes/GC.Spread.Sheets.Charts.ChartCollection   (add, all, get, remove…)
-GC.Spread.Sheets.AutoFitType
-  → .../api/enums/GC.Spread.Sheets.AutoFitType                (cell, cellWithHeader)
-GC.Spread.Sheets.Commands
-  → .../api/modules/GC.Spread.Sheets.Commands                 (autoFitColumn, autoFitRow…)
+glob  pattern "**/GC.Spread.Sheets.Charts.ChartCollection.md"
+      → classes/GC.Spread.Sheets.Charts.ChartCollection.md
+        (add, all, get, remove, zIndex…)
+glob  pattern "**/GC.Spread.Sheets.AutoFitType.md"
+      → enums/…        (cell, cellWithHeader)
+glob  pattern "**/GC.Spread.Sheets.Commands.md"
+      → modules/…      (autoFitColumn, autoFitRow…)
 ```
 
-Sheet-level members live on the `Worksheet` class page, workbook-level ones on
+Sheet-level members live on the `Worksheet` file, workbook-level ones on
 `Workbook` — that is where `getText`, `setArray`, `frozenRowCount`, `printInfo`
-and friends are listed. If you do not know which symbol you need, search the docs
-site at `demo.grapecity.com.cn/spreadjs/help` rather than inventing a name. After
-any formula or cross-sheet change, read the affected cells back rather than
+and friends are documented. **Some files are large** (the `Worksheet` one is
+~150 KB): grep inside the file for the method name rather than reading the whole
+thing.
+
+**If the reference file is missing or silent**, the engine's own TypeScript
+declarations are installed beside the plugin and are authoritative for the exact
+version in use — grep the class name in
+`node_modules/@grapecity-software/spread-sheets/dist/gc.spread.sheets.d.ts`
+(and the matching `dist/*.d.ts` of the `-io` / `-pdf` / `-charts` … packages).
+They carry every signature with its JSDoc, but no prose or examples.
+
+**Only if your environment has working web tools**, the same reference is also
+published online, with feature guides under `/spreadjs/help/docs/`. Do not rely on
+this: web search is not configured in every deployment, and a failed search costs
+a round trip.
+
+```
+https://demo.grapecity.com.cn/spreadjs/help/api/classes/<Full.Name>
+https://demo.grapecity.com.cn/spreadjs/help/api/enums/<Full.Name>
+https://demo.grapecity.com.cn/spreadjs/help/api/modules/<Full.Name>
+```
+
+After any formula or cross-sheet change, read the affected cells back rather than
 trusting the write.
 
 ## Failure recovery

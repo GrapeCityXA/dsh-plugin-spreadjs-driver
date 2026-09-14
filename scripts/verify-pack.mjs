@@ -64,4 +64,22 @@ if (missing.length > 0) {
   console.error(`tarball is missing required runtime file(s):\n  ${missing.join('\n  ')}`)
   process.exit(1)
 }
-console.log(`verify-pack: tarball ships ${shipped.size} files, incl. all ${required.length} required (${first.unpackedSize ?? '?'} B unpacked)`)
+// The bundled API reference is what makes "look it up, never guess" work offline.
+// It is a large tree of small files, so a plain path check would only prove one
+// file survived; count them instead. The floor is deliberately below the real
+// count so adding or refreshing a version does not trip it.
+const REFERENCE_PREFIX = 'skills/spreadjs/reference/'
+const referenceFiles = [...shipped].filter((path) => path.startsWith(REFERENCE_PREFIX))
+const REFERENCE_FLOOR = 800
+if (referenceFiles.length < REFERENCE_FLOOR) {
+  console.error(
+    `the bundled API reference did not ship: ${referenceFiles.length} file(s) under ${REFERENCE_PREFIX} (expected at least ${REFERENCE_FLOOR}).\n` +
+      'Check the package.json "files" list still includes "skills".',
+  )
+  process.exit(1)
+}
+
+const megabytes = ((first.unpackedSize ?? 0) / 1024 / 1024).toFixed(1)
+console.log(
+  `verify-pack: tarball ships ${shipped.size} files, incl. all ${required.length} required and ${referenceFiles.length} reference files (${megabytes} MB unpacked)`,
+)
