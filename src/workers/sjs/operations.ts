@@ -475,6 +475,11 @@ function installWorksheetGuards(GC: Gc): void {
 
   const MAX_ROWS = 1_048_576
   const MAX_COLUMNS = 16_384
+  // Grow past the target so a loop that writes N rows does not call resize once
+  // per row: a per-row bump measured ~15x slower than a single upsizing on a
+  // 20k-row write, and pushed it past the 60s operation budget.
+  const GROWTH_STEP_ROWS = 512
+  const GROWTH_STEP_COLUMNS = 64
 
   const grow = (sheet: any, row: unknown, col: unknown): void => {
     if (typeof row === 'number' && Number.isFinite(row) && row >= 0) {
@@ -486,7 +491,7 @@ function installWorksheetGuards(GC: Gc): void {
             'SJS_SHEET_LIMIT_EXCEEDED',
           )
         }
-        sheet.setRowCount(row + 1)
+        sheet.setRowCount(nextExtent(rows, row, MAX_ROWS, GROWTH_STEP_ROWS))
       }
     }
     if (typeof col === 'number' && Number.isFinite(col) && col >= 0) {
@@ -498,7 +503,7 @@ function installWorksheetGuards(GC: Gc): void {
             'SJS_SHEET_LIMIT_EXCEEDED',
           )
         }
-        sheet.setColumnCount(col + 1)
+        sheet.setColumnCount(nextExtent(columns, col, MAX_COLUMNS, GROWTH_STEP_COLUMNS))
       }
     }
   }
@@ -535,6 +540,15 @@ function installWorksheetGuards(GC: Gc): void {
       return originalName.apply(this, args)
     }
   }
+}
+
+/**
+ * Next row/column count to resize to: enough for the requested index, then
+ * rounded up to a doubling-or-step boundary so a loop that fills N rows
+ * resizes O(log N) times instead of once per row.
+ */
+function nextExtent(current: number, requested: number, ceiling: number, step: number): number {
+  return Math.min(ceiling, Math.max(requested + 1, current * 2, current + step))
 }
 
 /** Reject sheet names Excel itself refuses, with a message that says why. */

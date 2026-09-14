@@ -365,6 +365,26 @@ const run = async () => {
     assert(envelope.result.width >= 1100, `png covers the slicer past the default viewport (width ${envelope.result.width})`)
   })()
 
+  await step('a large auto-grown write stays inside the operation budget', async () => {
+    // Growing by one row per written row made a 20k-row write take ~74s, past
+    // the 60s operation budget. The bound is deliberately loose — it only has to
+    // catch a return to per-row resizing, not to measure performance.
+    const file = join(dir, 'bulk.ssjson')
+    const created = await runWorker({ op: 'new', targetPath: file })
+    assertOk(created.envelope, 'bulk workbook created')
+    const started = Date.now()
+    const { envelope } = await runWorker({
+      op: 'execute',
+      sourcePath: file,
+      workspaceRoot: dir,
+      code: 'const s = sheet(); for (let i = 0; i < 20000; i++) { s.setValue(i, 0, i); s.setValue(i, 1, "名称" + i) } return { rows: s.getRowCount() }',
+    })
+    const elapsed = Date.now() - started
+    assertOk(envelope, 'bulk write succeeds')
+    assert(envelope.result.rows >= 20000, `sheet grew to hold the rows (${envelope.result.rows})`)
+    assert(elapsed < 50_000, `20k-row write finished in ${elapsed}ms (budget 60000ms)`)
+  })()
+
   await step('screenshot measures content exactly and clips past the raster ceiling', async () => {
     // Content size comes from the model (column widths / row heights + headers),
     // so a sheet larger than any probe viewport still measures. Past the ceiling
