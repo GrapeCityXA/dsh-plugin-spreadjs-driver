@@ -217,6 +217,11 @@ layout section below), `.name('…')` (both getter and setter),
 `getUsedRange()` with no argument can return `null` here — pass the enum
 explicitly.
 
+`.getValue(r, c)` is the raw value; **`.getText(r, c)`** is that value *as
+displayed*, after formatting and rounding. Use `getText` when checking whether a
+value fits its column — `#,##0` renders wider than the number behind it — and note
+there is no `getDisplayText`.
+
 **Charts, shapes, slicers and pivot tables are available.** The `shapes`,
 `charts`, `slicers`, `pivot-addon` and `datacharts-addon` packs ship with the
 plugin:
