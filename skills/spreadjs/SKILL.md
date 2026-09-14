@@ -148,6 +148,12 @@ approximation.
   instantly. Wrap a merged span only where a label truly spans cells.
 - **Long tables: freeze the header** (`s.frozenRowCount(1)`) and put the
   `合计`/total in its own styled row, not inside the data.
+- **A merge does not empty the cells it covers.** Content written before
+  `addSpan` stays in the hidden cells and still counts in the used range — so a
+  total row that fills every column and *then* merges its label across `A:C`
+  leaves two live cells under the span. Either write only to the value columns
+  from the start, or clear the covered cells deliberately (`removeSpan` →
+  `clear` → `setFormula(…, null)` → `addSpan`).
 
 ```js
 // fit each column to its widest value, CJK-aware (≈15px CJK / 8px ASCII + pad)
@@ -221,6 +227,17 @@ explicitly.
 displayed*, after formatting and rounding. Use `getText` when checking whether a
 value fits its column — `#,##0` renders wider than the number behind it — and note
 there is no `getDisplayText`.
+
+**`clear()` does not remove a formula.** `s.clear(r, c, rowCount, colCount)`
+empties values and formatting, but a formula written into that cell *survives* —
+the cell still counts in the used range and still recalculates, which makes a
+"cleared" cell quietly keep costing you. Remove a formula by assigning null
+(`s.setFormula(r, c, null)`); do both when you want a cell genuinely blank:
+
+```js
+s.clear(r, c, 1, 1)
+s.setFormula(r, c, null)   // clear() alone leaves the formula in place
+```
 
 **Charts, shapes, slicers and pivot tables are available.** The `shapes`,
 `charts`, `slicers`, `pivot-addon` and `datacharts-addon` packs ship with the
