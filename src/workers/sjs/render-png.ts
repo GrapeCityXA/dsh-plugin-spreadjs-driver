@@ -262,8 +262,10 @@ function measureContent(window: any, GC: Gc, json: unknown): Measure {
 
 /**
  * Pixel size of the used cell block including the row/column headers the canvas
- * paints. Hidden rows and columns occupy no space, and a width/height the model
- * does not report falls back to the sheet default.
+ * paints, and a width/height the model does not report falls back to the sheet
+ * default. The visibility check is defensive: SpreadJS reports a hidden row's
+ * height and a hidden column's width as 0, so they already contribute nothing —
+ * but a size that survives hiding must not start silently inflating the shot.
  */
 function cellExtent(
   sheet: any,

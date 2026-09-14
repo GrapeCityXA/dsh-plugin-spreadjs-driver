@@ -82,6 +82,28 @@ workspace but you cannot see it: on a text-only route `read_image` refuses for
 the same reason, so do not spend a call on it — verify the layout numerically
 (the widths/values you read back) or export a `.pdf` snapshot instead.
 
+## Screenshot geometry (predict the size, do not probe for it)
+
+A `png` snapshot is sized from the model, so its dimensions can be computed
+instead of discovered by taking test screenshots:
+
+```
+content width  = 40 (row header) + Σ visible column widths
+content height = 20 (column header) + Σ visible row heights
+canvas         = content + 8px padding
+```
+
+- Hidden rows and columns report `getRowHeight` / `getColumnWidth` as **0**, so
+  they take no space in the image.
+- Floating objects (charts, shapes, slicers, pictures) extend the box to their own
+  coordinates when they reach past the cells.
+- Floor **282 × 182** — a small or empty sheet is padded up to this, never smaller.
+- Ceiling **2582 × 2182** — past it the image is a **crop** and the result carries
+  `clipped: true`. Read that flag rather than assuming the picture is complete.
+
+So a 20-row table with 90px columns renders 282 wide (floored) and
+`20 + 20 × 20 + 8 = 428` tall.
+
 ## Build tables that read well (layout & style)
 
 Correct formulas are not enough: a sheet whose columns are too narrow, or whose
