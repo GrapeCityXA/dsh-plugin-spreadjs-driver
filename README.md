@@ -88,7 +88,7 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 - Worktrees support `create`/`list` in this release; approval (`merge`/`discard`) is a later phase.
 - `sjs_execute` can drive charts, shapes, slicers and pivot tables (the `shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` packs ship with the plugin); a `png` snapshot covers floating objects even when they sit outside the used cell range or on a sheet with no used cells (a pivot layout).
 - Out-of-range writes grow the sheet instead of being dropped, and operations naming the same workbook run serially, so parallel tool calls cannot lose each other's edits.
-- Each `sjs_execute` runs batched (repaint and change events suspended, ~1.9× faster on a large fill); a script may additionally suspend calculation for a write-only pass.
+- Each `sjs_execute` runs batched — repaint, change events and calculation are all suspended, which measured 3.6× faster on a 20k-row fill with formulas. A script that reads a computed value mid-way must `spread.resumeCalcService()` first; stored and exported values are always fully calculated.
 - A `png` result carries `clipped: true` when the sheet is larger than the 2600×2200 raster ceiling; the image is then a crop rather than an error.
 
 ## Development

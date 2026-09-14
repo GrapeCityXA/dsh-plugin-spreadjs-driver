@@ -178,19 +178,28 @@ engine would discard the write and report success, which is why the plugin
 guards it.) The ceiling is the spreadsheet's own: 1,048,576 rows × 16,384
 columns.
 
-**Bulk writes are already batched for you.** The engine suspends repainting and
-change events around your whole script — roughly 1.9× faster on a 20k-row fill,
-and the gap widens with size — so do **not** reach for `suspendPaint()` yourself.
-Calculation is deliberately left running, because a formula read while calculation
-is suspended returns `null` and these scripts verify themselves by reading values
-back. For a large **write-only** pass you may suspend it explicitly for roughly
-another 2×, then resume before you read anything:
+**Your whole script already runs batched.** The engine suspends repainting, change
+events *and* calculation around it — a 20k-row fill with formulas measured 3412ms
+unbatched against 959ms batched, and the gap widens with size — so do **not** call
+`suspendPaint()` / `suspendCalcService()` yourself, and do not break the fill into
+more tool calls than it needs.
+
+The one consequence to design around: **while the batch is running, reading a
+formula's value returns `null`** (plain values are unaffected). Fill first, then
+read — resume calculation before you verify anything computed:
 
 ```js
-spread.suspendCalcService()
+const s = sheet()
 for (let r = 0; r < 50000; r++) { s.setValue(r, 0, r); s.setFormula(r, 1, '=A' + (r + 1) + '*2') }
-spread.resumeCalcService()   // a formula read before this line returns null
+s.setFormula(50000, 0, '=SUM(A1:A50000)')
+
+spread.resumeCalcService()        // one recalculation; cheap
+return { sum: s.getValue(50000, 0) }   // without the resume above this is null
 ```
+
+The workbook is persisted only after the batch ends, so stored and exported values
+are always fully calculated — a later `sjs_status`/`sjs_export`, or a fresh read in
+the *next* tool call, always sees the real numbers.
 
 Operations that name the **same workbook run one at a time, in arrival order**;
 different workbooks still run in parallel. Issue parallel `sjs_execute` calls

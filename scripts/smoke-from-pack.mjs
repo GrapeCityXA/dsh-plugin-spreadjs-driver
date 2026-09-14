@@ -138,6 +138,7 @@ try {
       "const s = sheet()",
       "s.setValue(0,0,'产品')", "s.setValue(1,0,'苹果')", "s.setValue(1,1,10)",
       "s.setFormula(2,1,'=B2*2')",
+      "spread.resumeCalcService()", // the engine batches calculation; read after resuming
       "return { a: s.getValue(0,0), doubled: s.getValue(2,1) }",
     ].join('\n')
     const result = await callTool('sjs_execute', { file: 'packed.ssjson', code })

@@ -381,9 +381,11 @@ const run = async () => {
         'const s = sheet()',
         'for (let i = 0; i < 20000; i++) { s.setValue(i, 0, i); s.setValue(i, 1, "名称" + i) }',
         's.setFormula(20000, 0, "=SUM(A1:A20000)")',
-        // Read the formula back INSIDE the script: the engine batches paint and
-        // events for speed, and this catches anyone extending that to suspend
-        // calculation, which would make every in-script formula read null.
+        // The engine batches the whole script (paint, events AND calculation), so
+        // a formula read mid-batch returns null. Resuming first is the documented
+        // way to verify inside a script, and this asserts the values really are
+        // there rather than merely that the write did not throw.
+        'spread.resumeCalcService()',
         'return { rows: s.getRowCount(), sum: s.getValue(20000, 0) }',
       ].join('\n'),
     })

@@ -118,6 +118,7 @@ await step('sjs_execute writes 中文 + formula and returns values', async () =>
     "s.setValue(1,0,'苹果')", "s.setValue(1,1,10)",
     "s.setValue(2,0,'香蕉')", "s.setValue(2,1,20)",
     "s.setFormula(3,1,'=SUM(B2:B3)')",
+    "spread.resumeCalcService()", // a formula read inside the batch returns null
     "return { a: s.getValue(0,0), sum: s.getValue(3,1) }",
   ].join('\n')
   const result = await callTool('sjs_execute', { file: 'ledger.ssjson', code })
@@ -375,6 +376,7 @@ await step('sjs_execute grows the sheet instead of dropping out-of-range writes'
         'for (let r = 0; r < 5000; r++) s.setValue(r, 0, r)',
         'for (let c = 0; c < 40; c++) s.setValue(0, c, c)',
         's.setFormula(5000, 0, "=SUM(A1:A5000)")',
+        'spread.resumeCalcService()', // resume before reading a calculated value
         'return { v4999: s.getValue(4999, 0), last: s.getValue(0, 39), sum: s.getValue(5000, 0) }',
       ].join('\n'),
     }),
