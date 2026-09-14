@@ -266,12 +266,35 @@ return { total: s.getValue(5, 1), lastRow: s.getRowCount(), sheet: s.name() }
 
 ## Unknown SpreadJS API: verify before writing code
 
-The MCP/docs knowledge base for SpreadJS is the authoritative reference; your
-training memory of its API is not reliable. When `sjs_execute` needs a SpreadJS
-symbol, signature, enum, or return shape you have not confirmed, look it up in
-the official SpreadJS documentation (SpreadJS MCP when available) **before**
-writing the code — guessing produces `SJS_SCRIPT_ERROR`. After any formula or
-cross-sheet change, read the affected cells back rather than trusting the write.
+**Your training memory of the SpreadJS API is not reliable** — guessing a name or
+signature produces `SJS_SCRIPT_ERROR` and costs a round trip. The official
+reference is authoritative, and its pages have **deterministic URLs built from the
+symbol's full name**, so you can check any symbol without searching for it:
+
+```
+https://demo.grapecity.com.cn/spreadjs/help/api/classes/<Full.Name>    a class
+https://demo.grapecity.com.cn/spreadjs/help/api/enums/<Full.Name>      an enum
+https://demo.grapecity.com.cn/spreadjs/help/api/modules/<Full.Name>    a namespace
+```
+
+Fetch before you write whenever the name, parameters, enum members or return
+shape is not something you have already confirmed in this session:
+
+```
+GC.Spread.Sheets.Charts.ChartCollection
+  → .../api/classes/GC.Spread.Sheets.Charts.ChartCollection   (add, all, get, remove…)
+GC.Spread.Sheets.AutoFitType
+  → .../api/enums/GC.Spread.Sheets.AutoFitType                (cell, cellWithHeader)
+GC.Spread.Sheets.Commands
+  → .../api/modules/GC.Spread.Sheets.Commands                 (autoFitColumn, autoFitRow…)
+```
+
+Sheet-level members live on the `Worksheet` class page, workbook-level ones on
+`Workbook` — that is where `getText`, `setArray`, `frozenRowCount`, `printInfo`
+and friends are listed. If you do not know which symbol you need, search the docs
+site at `demo.grapecity.com.cn/spreadjs/help` rather than inventing a name. After
+any formula or cross-sheet change, read the affected cells back rather than
+trusting the write.
 
 ## Failure recovery
 
