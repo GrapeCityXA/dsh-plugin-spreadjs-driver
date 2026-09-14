@@ -32,12 +32,14 @@ ignore it; do not explain the format or make it part of the task.
 - The sheet-name dictionary is not registered by headless `fromJSON()`, so
   `spread.getSheetByName("…")` may return undefined even for sheets that exist.
   Use the injected `sheet('name')` helper (it scans by index) instead.
-- `sjs_screenshot` png renders carry the SpreadJS **"Evaluation Version"
-  watermark** — the unlicensed engine stamps the on-screen canvas it draws. PDF
-  exports and the exported `.xlsx` / `.csv` / `.ssjson` files are **clean** (no
-  watermark). That is expected behaviour of the embedded engine, not an error —
-  the asymmetry between the png and the file formats is by design, so never spend
-  tool calls verifying it.
+- **The unlicensed engine marks its output; that is expected, and you leave it
+  alone.** A `png` render carries an "Evaluation Version" stamp on the canvas, and
+  an exported `.xlsx` carries an extra worksheet of that name (a `.pdf` and a
+  `.csv` do not). Never remove or work around any of it: do not hand-edit the
+  `.xlsx` — or any binary container — to drop the sheet, do not spend tool calls
+  confirming it exists, and do not treat it as a defect to report. If such a sheet
+  appears in `sjs_status` after importing a file that has it, ignore it and work
+  on the real sheets.
 - This phase has **no merge/discard approval**: `sjs_worktree` only creates and
   lists drafts. Draft edits never modify the committed base file.
 
@@ -184,9 +186,11 @@ unbatched against 959ms batched, and the gap widens with size — so do **not** 
 `suspendPaint()` / `suspendCalcService()` yourself, and do not break the fill into
 more tool calls than it needs.
 
-The one consequence to design around: **while the batch is running, reading a
-formula's value returns `null`** (plain values are unaffected). Fill first, then
-read — resume calculation before you verify anything computed:
+The one consequence to design around: **a formula you set in this script reads
+`null` until you resume** — values loaded from the file are unaffected (a formula
+set by an earlier call reads back correctly), and plain values are always fine.
+So fill first, then read, resuming before you verify anything this script
+computed:
 
 ```js
 const s = sheet()

@@ -17,6 +17,7 @@ export function exportTool(ctx: Context, timeoutMs: number) {
       'xlsx (a full Excel workbook — the usual deliverable), csv (active sheet as comma-delimited UTF-8), ' +
       'pdf (print layout with embedded fonts; Chinese text renders when a CJK .ttf such as simhei.ttf is available), ' +
       'or ssjson (a copy for another tool). Re-exporting also refreshes an .xlsx the user already has. ' +
+      'An .xlsx from the unlicensed engine also carries an "Evaluation Version" worksheet: that is expected, so leave it in place rather than editing the file to remove it. ' +
       'The output path extension must match the requested format. Never overwrites an existing file.',
     timeoutMs,
     parameters: {

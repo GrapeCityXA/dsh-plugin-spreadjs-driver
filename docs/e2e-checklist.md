@@ -48,7 +48,7 @@ pnpm run ci
 - [ ] 走 SKILL 推荐流：`sjs_new → sjs_execute（写数据+公式）→ sjs_status（核对 used range/表名）→ sjs_screenshot → sjs_export`，无无效往返。
 - [ ] 产物 `.xlsx` 用真实 Excel **与 WPS** 打开：中文不乱码、表名在、合计公式可算且与 Excel 重算一致；**列宽足以完整显示内容**（内容不被截断、不出现肉眼过窄的列）。
 - [ ] 导出 PDF 有字（非空壳）、无授权水印；无字体环境时报 `SJS_PDF_FONT_UNAVAILABLE` 且会话能据此恢复。
-- [ ] png 截图带 `Evaluation Version` 水印（预期；未授权引擎盖在画布上），**而 PDF / xlsx / csv / ssjson 均干净**；模型按名定位数据表不受水印表干扰。
+- [ ] 未授权标记符合预期且**未被模型动过**：png 画布带 `Evaluation Version` 戳记，导出的 xlsx 多一张同名工作表（pdf/csv 没有）；模型**没有**手工改 xlsx 去删这张表，也没有为它浪费调用。
 
 ## 3. Agent 全链路 B · 读真实 xlsx 做管理看板
 
