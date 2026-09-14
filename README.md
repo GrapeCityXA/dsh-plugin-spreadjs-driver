@@ -33,15 +33,35 @@ The plugin ships one orchestration skill (`spreadjs`) and these tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `sjs_new` | Create an empty `.ssjson` workbook. |
-| `sjs_import` | Import Excel `.xlsx`, `.csv` or `.ssjson` into a canonical `.ssjson`. |
+| `sjs_new` | Create a workbook for a new sheet. |
+| `sjs_import` | Bring an existing `.xlsx` / `.csv` / `.ssjson` in as a working workbook. |
 | `sjs_status` | Inspect sheets, dimensions and used ranges. |
 | `sjs_execute` | Run SpreadJS JavaScript against a workbook (complex edits the narrow tools cannot express); the file is saved afterwards. |
 | `sjs_screenshot` | Visual snapshot: `png` pixel render of the active sheet, or a `pdf` print-layout snapshot. |
-| `sjs_export` | Export to `.xlsx`, `.csv`, `.ssjson` or `.pdf`. |
+| `sjs_export` | Produce the file you open: `.xlsx`, `.csv`, `.pdf` — or a `.ssjson` copy. |
 | `sjs_worktree` | Branch an isolated draft snapshot of a committed workbook (`create`), or list open drafts. |
 
-`.ssjson` is the plugin's canonical workspace format: lossless, JSON, and the only format the tools edit directly. Real files enter through `sjs_import` and leave through `sjs_export`.
+### About the two files
+
+You work with **`.xlsx`**. Beside it the plugin keeps a **`.ssjson`** companion —
+SpreadJS's own lossless format, which is what the engine actually reads and
+writes on every call. It is a program-facing file; you never need to open it, and
+the agent is told not to make it part of the conversation.
+
+The flow is deliberately **one-way**:
+
+```
+your .xlsx  ──sjs_import──▶  .ssjson (working file)  ──sjs_export──▶  .xlsx you open
+```
+
+An exported `.xlsx` is always derived from the working file, never re-imported
+from a previous `.xlsx`. Round-tripping through Excel on every edit would let the
+small losses inherent in any `.xlsx` conversion accumulate; this way they stay
+bounded to the one import and the one export.
+
+Exporting is also what refreshes a `.xlsx` you already had: a file left over from
+an earlier export goes stale after further edits, so ask for a fresh export rather
+than assuming it is current.
 
 ## Typical flow
 

@@ -33,15 +33,32 @@ dsh --profile <your-profile> --dump-config
 
 | 工具 | 用途 |
 | --- | --- |
-| `sjs_new` | 新建空 `.ssjson` 工作簿。 |
-| `sjs_import` | 将 Excel `.xlsx`、`.csv` 或 `.ssjson` 导入为规范的 `.ssjson`。 |
+| `sjs_new` | 为一张新表创建工作簿。 |
+| `sjs_import` | 将已有的 `.xlsx` / `.csv` / `.ssjson` 引入为工作簿。 |
 | `sjs_status` | 查看工作表、尺寸与已用区域。 |
 | `sjs_execute` | 对工作簿执行 SpreadJS JavaScript（完成窄工具无法表达的复杂编辑）；执行后自动保存文件。 |
 | `sjs_screenshot` | 视觉快照：`png` 对活动工作表做像素渲染，或 `pdf` 打印布局快照。 |
-| `sjs_export` | 导出为 `.xlsx`、`.csv`、`.ssjson` 或 `.pdf`。 |
+| `sjs_export` | 产出你要打开的文件：`.xlsx`、`.csv`、`.pdf`，或 `.ssjson` 副本。 |
 | `sjs_worktree` | 为已提交的工作簿创建隔离的草稿快照（`create`），或列出打开的草稿（`list`）。 |
 
-`.ssjson` 是本插件的规范工作区格式：无损、JSON、也是工具直接编辑的唯一格式。真实文件经 `sjs_import` 进入、经 `sjs_export` 离开。
+### 关于那两个文件
+
+你面对的是 **`.xlsx`**。它旁边还有一份 **`.ssjson`** 同伴文件——那是 SpreadJS 自己的
+无损格式，也是引擎每次调用真正读写的对象。它**是给程序看的**：你不需要打开它，
+Agent 也被要求不要把它带进对话。
+
+数据流是刻意**单向**的：
+
+```
+你的 .xlsx  ──sjs_import──▶  .ssjson（工作文件）  ──sjs_export──▶  你打开的 .xlsx
+```
+
+导出的 `.xlsx` **永远从工作文件派生，而不是从上一个 `.xlsx` 再导入**。每次编辑都往
+Excel 里绕一圈，会让 `.xlsx` 转换固有的细小损耗逐次累积；单向流动则把损耗限制在
+「一次导入 + 一次导出」之内。
+
+导出同时也是刷新已有 `.xlsx` 的方式：更早导出的文件在此后继续编辑就会变旧，
+需要就重新导一次，别默认它是最新的。
 
 ## 典型流程
 

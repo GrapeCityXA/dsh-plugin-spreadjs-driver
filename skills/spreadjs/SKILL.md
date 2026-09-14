@@ -1,23 +1,32 @@
 ---
 name: spreadjs
-description: Create, inspect, edit, import, export, and screenshot .ssjson SpreadJS workbooks through the sjs_* DSH tools. Use proactively for any spreadsheet task — building or editing tables, cells, formulas, sheets, formatting; reading or writing .xlsx / .csv files; producing a .pdf or .png visual snapshot; or running SpreadJS JavaScript through sjs_execute for anything the narrow tools cannot express.
+description: Create, inspect, edit, import, export and screenshot real Excel workbooks (.xlsx) through the sjs_* DSH tools. Use proactively for any spreadsheet task — building or editing tables, cells, formulas, sheets, formatting; reading or writing .xlsx / .csv files; producing a .pdf or .png visual snapshot; or running SpreadJS JavaScript through sjs_execute for anything the narrow tools cannot express.
 ---
 
-# SpreadJS workbooks (.ssjson)
+# Spreadsheets (Excel .xlsx)
 
 Do spreadsheet work with the bundled `sjs_*` tools — never hand-edit a binary
 .xlsx, and never substitute openpyxl / python-pptx / pandas / JS zip writers for
 SpreadJS. Complex or one-off operations go through `sjs_execute`, which runs
-real SpreadJS code in the headless engine. New or existing workbooks live as
-`.ssjson` files (canonical, JSON, human-inspectable) inside the session
-workspace.
+real SpreadJS code in the headless engine.
+
+**The file the user cares about is the `.xlsx`.** Beside it the engine keeps a
+`.ssjson` companion: its own lossless working format, meant to be read by the
+program, not by people. Keep it out of the conversation — name, describe and
+deliver the `.xlsx` (or `.pdf`). If the user asks what the `.ssjson` file is, say
+in one line that it is the engine's working copy for the workbook and they can
+ignore it; do not explain the format or make it part of the task.
 
 ## Mental model
 
-- **The .ssjson file is the source of truth.** Every tool call spawns a fresh,
-  one-shot SpreadJS engine that loads the file, does the work, and saves it
-  back. There is no live workbook handle that persists between calls — state
-  lives only on disk, so re-read with `sjs_status` after writing.
+- **Two files, one direction.** The `.ssjson` is the engine's working file and
+  its source of truth; the `.xlsx` you hand over is always **exported from it**,
+  never re-imported from a previous `.xlsx`. That one-way flow is what keeps the
+  Excel file faithful — round-tripping `.xlsx` → engine → `.xlsx` on every edit
+  would let small losses accumulate instead of staying bounded.
+- Every tool call spawns a fresh, one-shot engine that loads the working file,
+  does the work, and saves it back. There is no live workbook handle between
+  calls — state lives only on disk, so re-read with `sjs_status` after writing.
 - Rows and columns are **zero-based** in code (`setValue(0, 0)` is cell A1).
   A used-range `row`/`col` is also zero-based; `rowCount`/`colCount` are counts.
 - The sheet-name dictionary is not registered by headless `fromJSON()`, so
@@ -36,14 +45,14 @@ workspace.
 
 | Stage | Tool | Use |
 | --- | --- | --- |
-| Start | `sjs_new` | Create an empty `.ssjson` workbook (never overwrites an existing file). |
-| Start | `sjs_import` | Import Excel `.xlsx`, `.csv` or `.ssjson` into a `.ssjson` workbook (target never overwrites). |
+| Start | `sjs_new` | Create the engine's working workbook for a new sheet (never overwrites). The user's copy comes later from `sjs_export`. |
+| Start | `sjs_import` | Bring an existing `.xlsx` / `.csv` / `.ssjson` into a working workbook (target never overwrites). |
 | Start | `sjs_worktree` | `create` an isolated draft snapshot of a committed workbook; `list` open drafts. |
 | Inspect | `sjs_status` | List sheets, dimensions and used ranges of a workbook (metadata, not cell values). |
 | Write | `sjs_execute` | Run SpreadJS JavaScript against one workbook; the file is saved afterwards. |
 | Verify | `sjs_execute` | Return the cells you need, or call `snapshot()` for the sheet summary. |
 | Verify | `sjs_screenshot` | Render a visual snapshot: `png` (pixel render of the active sheet) or `pdf`. A `png` result reports `clipped: true` when the sheet exceeded the raster ceiling (2600×2200) and the image is a crop. |
-| Deliver | `sjs_export` | Export a workbook to `.xlsx`, `.csv`, `.ssjson` (canonical copy) or `.pdf`; output never overwrites. |
+| Deliver | `sjs_export` | Produce the file the user opens: `.xlsx` (Excel), `.csv`, `.pdf`, or a `.ssjson` copy for another tool. Output never overwrites. |
 
 ## Recommended flow
 
@@ -68,9 +77,13 @@ workspace.
    row heights and confirm nothing is left so narrow that values would clip
    (see "Build tables that read well" below). Treat the png as a flattened,
    watermarked spot-check, not a pixel-accurate preview.
-5. **Export only when asked.** `sjs_export` from the verified file/draft to the
-   requested `.xlsx` / `.csv` / `.ssjson` / `.pdf`, then confirm the file exists. Tool
-   success is not correctness evidence — verify task-specific assertions.
+5. **Deliver a `.xlsx`.** When the requested work is done — or the user asks to
+   see/save the result — `sjs_export` to `.xlsx` (plus `.csv` / `.pdf` if asked)
+   and confirm the file exists. Exporting is also what refreshes a `.xlsx` the
+   user already had: an export always re-derives it from the working file, so it
+   never drifts, but a `.xlsx` left over from an earlier export goes stale after
+   further edits — re-export rather than assuming it is current. Tool success is
+   not correctness evidence — verify task-specific assertions.
 
 `format: "png"` text is re-rendered in one readable CJK-capable font, so
 per-cell font/weight variety is flattened in the image only; the png also shows

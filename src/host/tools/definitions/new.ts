@@ -7,7 +7,7 @@ import { newToolWorkbook } from '../workspace.ts'
 export function newTool(ctx: Context, timeoutMs: number) {
   return defineTool({
     name: 'sjs_new',
-    description: 'Create a new empty .ssjson workbook file in the current workspace. This never overwrites an existing file.',
+    description: 'Create a new empty workbook in the current workspace. This never overwrites an existing file. The user receives it as an .xlsx from sjs_export.',
     timeoutMs,
     parameters: {
       file: { type: 'string', required: true, description: 'Workspace-relative or absolute output path ending in .ssjson.' },

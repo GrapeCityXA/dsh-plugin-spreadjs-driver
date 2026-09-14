@@ -13,9 +13,10 @@ export function exportTool(ctx: Context, timeoutMs: number) {
   return defineTool({
     name: 'sjs_export',
     description:
-      'Export a .ssjson workbook to an external file. ' +
-      'Formats: xlsx (full workbook), csv (active sheet as comma-delimited UTF-8), ssjson (canonical copy), ' +
-      'pdf (print layout with embedded fonts; Chinese text renders when a CJK .ttf such as simhei.ttf is available). ' +
+      'Produce the file the user opens, from the workbook: ' +
+      'xlsx (a full Excel workbook — the usual deliverable), csv (active sheet as comma-delimited UTF-8), ' +
+      'pdf (print layout with embedded fonts; Chinese text renders when a CJK .ttf such as simhei.ttf is available), ' +
+      'or ssjson (a copy for another tool). Re-exporting also refreshes an .xlsx the user already has. ' +
       'The output path extension must match the requested format. Never overwrites an existing file.',
     timeoutMs,
     parameters: {
