@@ -24,6 +24,11 @@ ignore it; do not explain the format or make it part of the task.
   never re-imported from a previous `.xlsx`. That one-way flow is what keeps the
   Excel file faithful — round-tripping `.xlsx` → engine → `.xlsx` on every edit
   would let small losses accumulate instead of staying bounded.
+- **Read workbooks through the tools, not by parsing the file.** The `.ssjson`
+  JSON is the engine's internal shape, not an interface: it can change between
+  versions, and it does not look the way you would guess. To inspect values, or to
+  prove a base file is untouched, go through `sjs_status` / `sjs_execute` (and
+  compare file timestamps or hashes) rather than hand-parsing the JSON.
 - Every tool call spawns a fresh, one-shot engine that loads the working file,
   does the work, and saves it back. There is no live workbook handle between
   calls — state lives only on disk, so re-read with `sjs_status` after writing.
