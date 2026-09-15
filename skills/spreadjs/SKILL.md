@@ -194,7 +194,19 @@ scope:
   finds the sheet by name. Throws `SJS_SHEET_NOT_FOUND` when absent.
 - `io.readText(path)` / `io.writeText(path, text)` / `io.readBytes(path)` —
   workspace-only file access. Paths are resolved against the session workspace;
-  an escape throws `SJS_FILE_PERMISSION_DENIED`.
+  an escape throws `SJS_FILE_PERMISSION_DENIED`. **The reads are asynchronous and
+  the writes return a promise too — always `await` them**; without it you get a
+  `Promise` object and the next line fails with something unrelated (`… is not a
+  function`, `Unexpected token`).
+
+  ```js
+  const csv = await io.readText('other.csv')   // ← without await this is a Promise
+  ```
+
+  That is also how a second file comes into the workbook you are editing: read it,
+  parse it, write it in. There is no tool that merges two workbooks, so a
+  combine-two-files request is answered by reading one and writing into the other
+  (or by returning the values one call and writing them in the next).
 - `console`, and `snapshot()` — returns the sheet summary (`sheets` with
   `name`, `rowCount`, `columnCount`, `usedRange`, plus `activeSheet`).
 
