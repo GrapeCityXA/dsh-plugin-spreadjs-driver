@@ -127,6 +127,12 @@ canvas         = content + 8px padding
 - Floor **282 × 182** — a small or empty sheet is padded up to this, never smaller.
 - Ceiling **2582 × 2182** — past it the image is a **crop** and the result carries
   `clipped: true`. Read that flag rather than assuming the picture is complete.
+- **A snapshot costs time in proportion to the workbook's data, not the image.**
+  It reloads the whole workbook to measure and again to render, so a large sheet
+  is slow: roughly 19 s end-to-end at 100k rows, against ~6 s for `sjs_status` on
+  the same file — and past ~400k rows it would run into the 60 s operation budget.
+  On a big sheet prefer exporting `.xlsx` / `.csv` and reading values back, and
+  treat a `clipped: true` snapshot as a thumbnail rather than a way to inspect it.
 
 So a 20-row table with 90px columns renders 282 wide (floored) and
 `20 + 20 × 20 + 8 = 428` tall.
