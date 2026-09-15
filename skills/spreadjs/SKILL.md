@@ -29,6 +29,13 @@ ignore it; do not explain the format or make it part of the task.
   versions, and it does not look the way you would guess. To inspect values, or to
   prove a base file is untouched, go through `sjs_status` / `sjs_execute` (and
   compare file timestamps or hashes) rather than hand-parsing the JSON.
+- **An `.xlsx` round trip keeps the workbook's features, but two of them come back
+  in a different shape** — check the right place before calling anything lost. An
+  image is added via `pictures` and comes back from an imported `.xlsx` as a
+  **shape**, so look in *both* `s.pictures.all()` and `s.shapes.all()`. Data
+  validation bounds come back as formula **strings** (`"=1"`, not `1`) — the rule
+  still holds, the type just changed. Conditional formats, comments, defined names
+  (`addCustomName`), merges, borders and number formats survive as they were.
 - Every tool call spawns a fresh, one-shot engine that loads the working file,
   does the work, and saves it back. There is no live workbook handle between
   calls — state lives only on disk, so re-read with `sjs_status` after writing.
