@@ -205,8 +205,16 @@ scope:
 
   That is also how a second file comes into the workbook you are editing: read it,
   parse it, write it in. There is no tool that merges two workbooks, so a
-  combine-two-files request is answered by reading one and writing into the other
-  (or by returning the values one call and writing them in the next).
+  combine-two-files request is answered by reading one and writing into the other.
+
+  **Move data between workbooks through the engine, not by parsing the other
+  file.** Run a script *on the source workbook* that reads its values normally and
+  parks them in the workspace (`await io.writeText('rows.json', JSON.stringify(rows))`),
+  then run a script *on the target workbook* that reads that JSON back and writes
+  it in. Parsing the source's `.ssjson` to get at its cells also "works", but it
+  couples you to an internal shape that gets your assumptions wrong (the sheet list
+  is a keyed map, not an array) and buys nothing — the engine reads the same values
+  correctly and the JSON file carries them across.
 - `console`, and `snapshot()` — returns the sheet summary (`sheets` with
   `name`, `rowCount`, `columnCount`, `usedRange`, plus `activeSheet`).
 
@@ -331,7 +339,11 @@ reference/<version>/interfaces/  …plus designer/, excelio/, collaboration/
 ```
 
 **The file name is the symbol's full name**, so you do not need to search — glob
-for it. The reference base is available to your file tools; for example:
+for it. **Do not build the path by hand**: the `<version>` folder names the *doc
+set*, not the engine, and the two differ (the docs here are `V19.0 API文档` while
+the installed engine reports 19.1.4) — a path assembled from the engine's version
+simply will not resolve. Glob for the file name and let the version folder be
+whatever it is. The reference base is available to your file tools; for example:
 
 ```
 glob  pattern "**/GC.Spread.Sheets.Charts.ChartCollection.md"
