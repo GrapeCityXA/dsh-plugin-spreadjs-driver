@@ -614,6 +614,13 @@ async function runUserCode(code: string, spread: Workbook, GC: Gc, workspaceRoot
     io: makeIo(workspaceRoot),
     console: makeConsole(),
     snapshot: () => summarizeSpread(spread, GC),
+    // A vm context is its own realm with its own intrinsics, and SpreadJS decides
+    // whether a cell value is a date with `instanceof Date` in THIS realm. A Date
+    // built from the sandbox's realm fails that check, so the engine treats it as
+    // a plain number and the cell ends up showing 1899/12/30 — a silently wrong
+    // date rather than an error. Handing the sandbox this realm's Date makes
+    // `new Date(...)` produce a value the engine recognises.
+    Date,
   })
   const source = `(async () => {\n${code}\n})()`
   const suspended = beginBatch(spread)

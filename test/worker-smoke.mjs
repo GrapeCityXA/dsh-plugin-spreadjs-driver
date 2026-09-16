@@ -255,6 +255,51 @@ const run = async () => {
   const pngOut = join(dir, 'shot.png')
   const pdfSnapshot = join(dir, 'shot.pdf')
 
+  await step('a Date written to a cell renders and survives the xlsx round trip', async () => {
+    // The sandbox is a vm realm, so a Date built inside it is not `instanceof Date`
+    // for the engine — it used to be stored as serial 0 and render as 1899/12/30,
+    // a silently wrong date rather than an error. The engine's own realm Date is
+    // injected into the sandbox to prevent that.
+    const file = join(dir, 'dates.ssjson')
+    const created = await runWorker({ op: 'new', targetPath: file })
+    assertOk(created.envelope, 'dates workbook created')
+
+    const written = await runWorker({
+      op: 'execute',
+      sourcePath: file,
+      workspaceRoot: dir,
+      code: [
+        'const s = sheet()',
+        'const st = new GC.Spread.Sheets.Style()',
+        "st.formatter = 'yyyy/mm/dd'",
+        's.setValue(0, 0, new Date(2026, 0, 15))',
+        's.setStyle(0, 0, st)',
+        'spread.resumeCalcService()',
+        'return { isDate: s.getValue(0, 0) instanceof Date, text: s.getText(0, 0) }',
+      ].join('\n'),
+    })
+    assertOk(written.envelope, 'date write')
+    assert(written.envelope.result.isDate === true, 'the engine recognises the written value as a date')
+    assert(written.envelope.result.text === '2026/01/15', `date renders as written (got ${written.envelope.result.text})`)
+
+    const xlsx = join(dir, 'dates.xlsx')
+    const exported = await runWorker({ op: 'export', sourcePath: file, outputPath: xlsx, format: 'xlsx' })
+    assertOk(exported.envelope, 'date xlsx export')
+    const back = join(dir, 'dates-back.ssjson')
+    const imported = await runWorker({ op: 'import', sourcePath: xlsx, targetPath: back })
+    assertOk(imported.envelope, 'date xlsx import')
+
+    const readBack = await runWorker({
+      op: 'execute',
+      sourcePath: back,
+      workspaceRoot: dir,
+      code: 'const s = sheet(); spread.resumeCalcService(); return { text: s.getText(0, 0), fmt: s.getStyle(0, 0).formatter }',
+    })
+    assertOk(readBack.envelope, 'date read back')
+    assert(readBack.envelope.result.text === '2026/01/15', `date survives the round trip (got ${readBack.envelope.result.text})`)
+    assert(readBack.envelope.result.fmt === 'yyyy/mm/dd', 'date format survives the round trip')
+  })()
+
   await step('screenshot png rasterizes a CJK active sheet', async () => {
     const prep = [
       'const s = sheet()',
