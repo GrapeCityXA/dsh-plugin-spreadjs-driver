@@ -1,8 +1,9 @@
-// Install the just-built plugin into one or more local DSH profiles.
+// Build, pack, and install the workspace's plugins into local DSH profiles.
 //
-//   node scripts/install-local.mjs [profile ...]      (default: sjs web)
+//   node scripts/install-local.mjs [profile ...]        (default: every profile
+//                                                        any plugin targets)
 //
-// Why this exists instead of a batch file calling `dsh plugin`:
+// Why this exists instead of `dsh plugin add`:
 //
 //  * `dsh plugin remove` has been observed doing its work and then not exiting,
 //    which strands a wrapper script between `remove` and `add` — leaving the
@@ -13,22 +14,19 @@
 //    skill, and the agent silently improvises without them. This script owns
 //    that list so the two can never disagree.
 //
-// Every profile is verified afterwards by byte-comparing the installed bundle
-// and worker against the freshly built ones: "installed" and "active" are
+// Every local plugin is verified afterwards by byte-comparing the installed
+// artifacts against the freshly built ones: "installed" and "active" are
 // different claims, and only the second one matters.
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import os from 'node:os'
+import { PLUGINS, STAGE_DIR, isBuildable, readManifest, tarballName } from './local-plugins.mjs'
 
-const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const PACKAGE_NAME = 'dsh-spreadjs-excel'
-const STAGE_DIR = dirname(resolve(ROOT)) // the repo's parent, where the profile points
-const PROFILES = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['sjs', 'web']
 const DSH_HOME = process.env.DSH_HOME ?? join(os.homedir(), '.dsh')
+const requested = process.argv.slice(2)
 
-/** Run a command through cmd on Windows so `.cmd` shims resolve like they do in a shell. */
+/** Run a command through cmd on Windows so `.cmd` shims resolve like a shell's. */
 function run(command, args, cwd) {
   const isWindows = process.platform === 'win32'
   const result = isWindows
@@ -42,23 +40,46 @@ function fail(message) {
   process.exit(1)
 }
 
-// --- 1. pack and stage --------------------------------------------------------
-const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
-const tarballName = `${PACKAGE_NAME}-${version}.tgz`
-console.log(`packing ${PACKAGE_NAME}@${version}`)
-const packed = run('npm', ['pack', '--silent'], ROOT)
-if (packed.status !== 0) fail(`npm pack failed:\n${packed.output}`)
-const built = join(ROOT, tarballName)
-if (!existsSync(built)) fail(`npm pack produced no ${tarballName}`)
+// --- 1. pack every local plugin -------------------------------------------------
+/** @type {{name: string, spec: string, repo: string, verify: string[]}[]} */
+const installable = []
 
-const staged = join(STAGE_DIR, tarballName)
-copyFileSync(built, staged)
-unlinkSync(built)
-console.log(`staged ${staged}`)
+for (const plugin of PLUGINS) {
+  const manifest = readManifest(plugin.repo)
+  if (manifest === undefined) {
+    console.log(`${plugin.name}: no local repo at ${plugin.repo} — will install from the registry`)
+    installable.push({ name: plugin.name, spec: plugin.name, repo: '', verify: [] })
+    continue
+  }
+  if (!isBuildable(plugin.repo)) {
+    fail(
+      `${plugin.repo} exists but has no node_modules, so it cannot be packed.\n` +
+        `  Run "pnpm install" there first.\n` +
+        `  (Refusing to fall back to the published package: you would install the unmodified\n` +
+        `   copy while believing it is the local one.)`,
+    )
+  }
+  console.log(`packing ${plugin.name}@${manifest.version} from ${plugin.repo}`)
+  const packed = run('npm', ['pack', '--silent'], plugin.repo)
+  if (packed.status !== 0) fail(`npm pack failed in ${plugin.repo}:\n${packed.output}`)
 
-// --- 2. install into each profile --------------------------------------------
+  const built = join(plugin.repo, tarballName(plugin.name, manifest.version))
+  if (!existsSync(built)) fail(`npm pack produced no ${tarballName(plugin.name, manifest.version)}`)
+
+  const staged = join(STAGE_DIR, tarballName(plugin.name, manifest.version))
+  copyFileSync(built, staged)
+  rmSync(built, { force: true })
+  console.log(`  staged ${staged}`)
+  installable.push({ name: plugin.name, spec: `file:${staged.replace(/\\/g, '/')}`, repo: plugin.repo, verify: plugin.verify })
+}
+
+// --- 2. install into each profile -----------------------------------------------
+const profiles = requested.length > 0
+  ? requested
+  : [...new Set(PLUGINS.flatMap((plugin) => (readManifest(plugin.repo) === undefined ? [] : plugin.profiles)))]
+
 let failed = false
-for (const profile of PROFILES) {
+for (const profile of profiles) {
   const dir = join(DSH_HOME, 'profiles', profile)
   const manifestPath = join(dir, 'package.json')
   if (!existsSync(manifestPath)) {
@@ -67,50 +88,74 @@ for (const profile of PROFILES) {
   }
   console.log(`\n${profile}:`)
 
-  // Remove first: pnpm treats an unchanged `file:` path + version as already
-  // satisfied and would otherwise reinstall the stored copy instead of the new build.
-  run('pnpm', ['remove', PACKAGE_NAME], dir)
-  const added = run('pnpm', ['add', `file:${staged.replace(/\\/g, '/')}`], dir)
-  if (added.status !== 0) {
-    console.error(`  pnpm add failed:\n${added.output}`)
-    failed = true
-    continue
-  }
-  console.log(`  installed ${version}`)
-
-  // Installed is not the same as active: without the bundle entry the plugin
-  // contributes nothing to the session.
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   const bundles = manifest?.dsh?.profile?.bundles
   if (!Array.isArray(bundles)) {
-    console.error(`  ${manifestPath} has no dsh.profile.bundles — cannot activate the plugin`)
+    console.error(`  ${manifestPath} has no dsh.profile.bundles — cannot activate anything`)
     failed = true
     continue
   }
-  if (!bundles.includes(PACKAGE_NAME)) {
-    bundles.push(PACKAGE_NAME)
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
-    console.log(`  added "${PACKAGE_NAME}" to dsh.profile.bundles`)
-  } else {
-    console.log('  bundle entry already present')
+
+  for (const entry of installable) {
+    const plugin = PLUGINS.find((candidate) => candidate.name === entry.name)
+    if (plugin !== undefined && !plugin.profiles.includes(profile)) {
+      // Still remove it, so a profile that should not carry it does not keep a stale copy.
+      run('pnpm', ['remove', entry.name], dir)
+      continue
+    }
+
+    // Remove first: pnpm treats an unchanged `file:` path + version as already
+    // satisfied and would otherwise reinstall the stored copy instead of the new build.
+    run('pnpm', ['remove', entry.name], dir)
+    const added = run('pnpm', ['add', entry.spec], dir)
+    if (added.status !== 0) {
+      console.error(`  ${entry.name}: pnpm add failed:\n${added.output}`)
+      failed = true
+      continue
+    }
+    console.log(`  installed ${entry.name}`)
+
+    // Installed is not the same as active: without the bundle entry the plugin
+    // contributes nothing to the session.
+    const current = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const currentBundles = current?.dsh?.profile?.bundles
+    if (!currentBundles.includes(entry.name)) {
+      currentBundles.push(entry.name)
+      writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`)
+      console.log(`    added "${entry.name}" to dsh.profile.bundles`)
+    }
+
+    // Byte-compare what was installed against what was just built.
+    if (entry.repo === '') continue
+    const installed = join(dir, 'node_modules', entry.name)
+    for (const relative of entry.verify) {
+      const from = readFileSync(join(entry.repo, relative))
+      const target = join(installed, relative)
+      const to = existsSync(target) ? readFileSync(target) : null
+      if (to === null) {
+        console.error(`    ${relative}: missing from the installed copy`)
+        failed = true
+      } else if (!from.equals(to)) {
+        console.error(`    ${relative}: installed copy differs from the build — the rebuild did not land`)
+        failed = true
+      }
+    }
+    console.log('    verified: installed artifacts match the build')
   }
 
-  // Byte-compare what was installed against what was just built.
-  const installed = join(dir, 'node_modules', PACKAGE_NAME)
-  for (const relative of ['lib/index.js', 'artifacts/sjs-worker.mjs']) {
-    const from = readFileSync(join(ROOT, relative))
-    const to = existsSync(join(installed, relative)) ? readFileSync(join(installed, relative)) : null
-    if (to === null) {
-      console.error(`  ${relative}: missing from the installed copy`)
-      failed = true
-    } else if (!from.equals(to)) {
-      console.error(`  ${relative}: installed copy differs from the build — the rebuild did not land`)
-      failed = true
+  // A profile that should not carry a plugin must not keep its bundle row either.
+  for (const plugin of PLUGINS) {
+    if (plugin.profiles.includes(profile)) continue
+    const current = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const currentBundles = current?.dsh?.profile?.bundles
+    if (currentBundles.includes(plugin.name)) {
+      current.dsh.profile.bundles = currentBundles.filter((name) => name !== plugin.name)
+      writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`)
+      console.log(`  removed "${plugin.name}" from dsh.profile.bundles (not for this profile)`)
     }
   }
-  if (existsSync(join(installed, 'lib/index.js'))) console.log('  verified: installed bundle matches the build')
 }
 
 console.log('')
-if (failed) fail('one or more profiles did not install cleanly (see above)')
-console.log(`done — profiles up to date: ${PROFILES.join(' ')}`)
+if (failed) fail('one or more plugins did not install cleanly (see above)')
+console.log(`done — profiles up to date: ${profiles.join(' ')}`)

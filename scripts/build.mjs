@@ -1,11 +1,14 @@
-// Build the two runtime artifacts from TypeScript sources:
+// Build the three runtime artifacts from TypeScript sources:
 //   - host bundle  : src/host/index.ts   -> lib/index.js            (loaded by DSH)
 //   - sjs worker   : src/workers/sjs/entry.ts -> artifacts/sjs-worker.mjs (spawned per call)
+//   - client half  : src/client/index.ts -> lib/client.js           (loaded into the browser)
 //
 // The host bundle keeps the @deepseek-ai peers external so a second copy of
 // Cordis is never inlined. The worker has no static package imports: its heavy
 // deps (@grapecity-software/*, jsdom, canvas) are loaded at runtime through
 // createRequire, which resolves them from this package's own node_modules.
+// The client half is wrapped as the module-table closure factory the DSH client
+// loader expects (same artifact shape the spreadjs-editor client uses).
 import { build } from 'esbuild'
 import { readFile } from 'node:fs/promises'
 
@@ -13,8 +16,12 @@ const target = 'node22'
 // Keep every @deepseek-ai peer external so a second copy of Cordis and friends
 // is never inlined. Derived from peerDependencies so a new peer (e.g. dsh-skill)
 // cannot silently drop out of the external set.
-const { peerDependencies } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+const { peerDependencies, name: packageName } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const peers = Object.keys(peerDependencies)
+
+// Module-table specifiers the browser half resolves at runtime instead of
+// inlining. Mirrors the spreadjs-editor client convention.
+const CLIENT_EXTERNALS = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis']
 
 const host = {
   entryPoints: ['src/host/index.ts'],
@@ -40,9 +47,32 @@ const worker = {
   logLevel: 'info',
 }
 
+// The browser half is loaded by the DSH client-modules system, which expects a
+// CommonJS closure factory registered on window.__ModuleLoader__. esbuild has no
+// separate `intro` hook (tsdown does), so the module object the wrapper closes
+// over is declared at the top of the banner.
+const client = {
+  entryPoints: ['src/client/index.ts'],
+  bundle: true,
+  outfile: 'lib/client.js',
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2022',
+  external: CLIENT_EXTERNALS,
+  sourcemap: false,
+  logLevel: 'info',
+  banner: {
+    js: [
+      `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {`,
+      'var module = { exports: {} }; var exports = module.exports;',
+    ].join('\n'),
+  },
+  footer: { js: 'return module.exports; } });' },
+}
+
 const onlyWorker = process.argv.includes('worker')
-const entries = onlyWorker ? [worker] : [host, worker]
+const entries = onlyWorker ? [worker] : [host, worker, client]
 for (const options of entries) {
   await build(options)
 }
-console.log(`esbuild: ${entries.length === 1 ? 'worker' : 'host + worker'} bundle(s) written`)
+console.log(`esbuild: ${onlyWorker ? 'worker' : 'host + worker + client'} bundle(s) written`)
