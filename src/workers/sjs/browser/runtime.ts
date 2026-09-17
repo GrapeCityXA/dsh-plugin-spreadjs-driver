@@ -227,9 +227,11 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
     await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: 1, mobile: false })
 
     forwardPageDiagnostics(page, log)
-    const bootMs = performance.now() - startedAt
     const injected = await bootPage(page, server.origin, log)
-    log(`[sjs] page ready in ${bootMs.toFixed(0)}ms (${String(injected.bundles)} bundles loaded)`)
+    // Measured AFTER the bundles are in: this is the cold-start cost of the whole
+    // runtime, which is what the operation timings have to be read against.
+    const pageReadyMs = performance.now() - startedAt
+    log(`[sjs] page ready in ${pageReadyMs.toFixed(0)}ms (${String(injected.bundles)} bundles loaded)`)
 
     const origin = server.origin
     /** Host-authorized URL: the capability is inlined HERE, per call. */

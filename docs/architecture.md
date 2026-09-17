@@ -82,10 +82,10 @@ leaks ~26 MB per launch). Profiles orphaned by a host timeout kill are swept by
 the next launch once they are an hour old.
 
 The cost of this model is cold start: every operation pays a browser launch plus
-~14 MB of UMD bundle loading (measured ~3.4 s per operation, of which ~0.9 s is
-page-ready). It is deliberately kept for this stage because it is what makes
-`sjs_execute`'s isolation story true — a hostile script dies with its process. A
-persistent browser is a later stage; see
+~14 MB of UMD bundle loading — measured ~2.5 s of page-ready work out of ~4.0 s
+per operation, i.e. most of the bill. It is deliberately kept for this stage
+because it is what makes `sjs_execute`'s isolation story true — a hostile script
+dies with its process. A persistent browser is a later stage; see
 `docs/design-real-browser-runtime.md`.
 
 Because worker state is one-shot, all state lives on disk in the `.ssjson`
