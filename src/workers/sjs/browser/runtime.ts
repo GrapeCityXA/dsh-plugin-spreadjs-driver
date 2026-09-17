@@ -56,10 +56,51 @@ const BUNDLES: readonly (readonly [packageName: string, file: string])[] = [
   ['spread-sheets-datacharts-addon', 'dist/gc.spread.sheets.datacharts.min.js'],
 ]
 
-/** The page document. The host is the box the engine measures and renders into. */
+/**
+ * The page document. The host is the box the engine measures and renders into.
+ *
+ * The inline script does two jobs, and both have to live HERE rather than in
+ * runtime.js:
+ *
+ *  1. **An error trap.** If runtime.js fails to load, a trap inside it would
+ *     never install, and the only symptom would be `__H is not defined` — with
+ *     no way to tell a 404 from a connection reset.
+ *  2. **A retry loop for runtime.js.** A browser that has just started
+ *     occasionally fails the very first subresource request (its network service
+ *     is still coming up); observed as `__H is not defined` on EVERY attempt,
+ *     because re-navigating only re-issues the same doomed request at the same
+ *     moment. Retrying from inside the page, with backoff, rides out the race —
+ *     and `window.__runtimeLoaded` gives Node a promise to await, so the boot
+ *     step knows the difference between "still loading" and "gave up".
+ */
 const APP_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>sjs-runtime</title>
 <style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}#host{width:1400px;height:900px}</style>
-</head><body><div id="host"></div><script src="/runtime.js"></script></body></html>`
+<script>
+window.__pageErrors = [];
+addEventListener('error', function (event) {
+  var target = event.target;
+  if (target && target.tagName === 'SCRIPT') window.__pageErrors.push('script failed to load: ' + (target.src || '(inline)'));
+  else window.__pageErrors.push('error: ' + event.message);
+}, true);
+addEventListener('unhandledrejection', function (event) { window.__pageErrors.push('unhandled rejection: ' + event.reason); });
+window.__runtimeLoaded = new Promise(function (resolve, reject) {
+  var attempt = 0;
+  function load() {
+    attempt++;
+    var script = document.createElement('script');
+    script.src = '/runtime.js?a=' + attempt;
+    script.onload = function () { resolve(true); };
+    script.onerror = function () {
+      window.__pageErrors.push('runtime.js failed to load (attempt ' + attempt + ')');
+      if (attempt < 5) setTimeout(load, 150 * attempt);
+      else reject(new Error('runtime.js failed to load after ' + attempt + ' attempts'));
+    };
+    document.head.appendChild(script);
+  }
+  load();
+});
+</script>
+</head><body><div id="host"></div></body></html>`
 
 /** Geometry constants shared with the page (see page.embed.js). */
 const HOST_WIDTH = 1400
@@ -351,14 +392,29 @@ async function bootPage(page: Page, origin: string, log: (message: string) => vo
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await page.goto(`${origin}/`)
+      // The document's own loader promise: it resolves once runtime.js has run,
+      // and rejects when the page gave up on fetching it.
+      await page.evaluate('window.__runtimeLoaded')
       return await callPage<{ bundles: number }>(page, '__H.boot()')
     } catch (error) {
       lastError = error
-      log(`[sjs] page boot attempt ${String(attempt)} failed: ${errorMessage(error)}`)
+      log(`[sjs] page boot attempt ${String(attempt)} failed: ${errorMessage(error)} :: ${await pageState(page)}`)
       await new Promise((resolve) => { setTimeout(resolve, 400) })
     }
   }
   throw new SjsWorkerError(`cannot load SpreadJS into the browser page: ${errorMessage(lastError)}`, 'SJS_BROWSER_FAILED')
+}
+
+/** One-line snapshot of the page, for diagnosing a boot failure. */
+async function pageState(page: Page): Promise<string> {
+  try {
+    const state = await page.evaluate(
+      'JSON.stringify({ href: location.href, ready: document.readyState, scripts: document.scripts.length, H: typeof window.__H, GC: typeof window.GC, errors: (window.__pageErrors || []).slice(0, 4) })',
+    )
+    return typeof state === 'string' ? state : '(no page state)'
+  } catch (error) {
+    return `(page unreachable: ${errorMessage(error)})`
+  }
 }
 
 /**
