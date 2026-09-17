@@ -1,10 +1,18 @@
+# Installed dependencies — matched at any depth on purpose.
 node_modules/
-lib/
-artifacts/
+
+# Build outputs. Rooted with a leading slash: an unanchored `artifacts/` also
+# matches `src/host/artifacts/`, which is source (it holds paths.ts, the worker
+# entry + plugin node_modules constants) and was silently excluded from the
+# repository until a fresh clone could not build.
+/lib/
+/artifacts/
+/out/
+/test-tmp/
+
 *.tgz
-out/
-test-tmp/
 .DS_Store
+
 # Development scratch: keep only the probe cited as evidence in render-png.ts.
 scratch/*
 !scratch/png-probe14.mjs
