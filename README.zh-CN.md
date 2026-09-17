@@ -4,12 +4,14 @@
 
 [English](README.md) · 简体中文
 
-`dsh-spreadjs-excel` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它在 Agent 运行时中内嵌了一个无头 SpreadJS 引擎，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。
+`dsh-spreadjs-excel` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（每次操作现起一个，用户看不到，随操作结束一起退出）。
 
 ## 环境要求
 
 - **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.1-rc.2` 或 `0.1.2-rc.1`）。
-- `.pdf` 导出与含中文的 `png` 截图需要宿主机上至少有一个可发现、支持 CJK 的 `.ttf`/`.otf` 字体（默认自动扫描系统字体目录；可通过环境变量 `GC_SJS_PDF_FONT_DIRS` 追加目录——不支持 `.ttc`）。
+- **宿主机需装有 Microsoft Edge 或 Google Chrome**。引擎运行在真实浏览器进程中（插件不自带浏览器内核，也不会弹出任何界面）。两者都在时优先用 Edge；可用插件配置 `browserPath` 指定具体可执行文件。都找不到时报 `SJS_BROWSER_UNAVAILABLE`，并在消息里列出探测过的路径。
+- 需要一个可写的临时目录，用于浏览器的一次性 profile。
+- `.pdf` 导出里若要保留中文，宿主机上至少要有可发现的支持 CJK 的 `.ttf`/`.otf` 字体（默认自动扫描系统字体目录；可通过环境变量 `GC_SJS_PDF_FONT_DIRS` 追加目录——不支持 `.ttc`）。`png` 截图不需要额外字体：浏览器自带真实字体。
 
 ## 安装
 
@@ -76,12 +78,12 @@ s.setFormula(5, 1, '=SUM(B2:B5)')
 return { total: s.getValue(5, 1) }
 ```
 
-完整的工具地图、执行环境契约与错误码恢复表见 `skills/spreadjs/SKILL.md`；无头引擎的嵌入方式见 `docs/architecture.md`。
+完整的工具地图、执行环境契约与错误码恢复表见 `skills/spreadjs/SKILL.md`；引擎运行时的嵌入方式见 `docs/architecture.md`。
 
 ## 说明
 
 - 未授权引擎会标记它的产出，这是预期行为：png 渲染在画布上带 **"Evaluation Version"** 戳记，导出的 `.xlsx` 会多出一张同名工作表（`.pdf` 与 `.csv` 没有）。**刻意保留、不做清除**——插件不清，Agent 也不应去清。它不影响数据。
-- 截图 `png` 的文字会统一用一种可读的中文字体重绘，因此图像中逐格字体/字重差异会被拉平——**仅影响图片**；截图绝不修改工作簿文件。
+- 截图 `png` 是引擎在真实浏览器里的原始渲染：字体、字重、颜色都是真的；截图绝不修改工作簿文件。
 - 本版本的 worktree 支持 `create`/`list`；审批（`merge`/`discard`）为后续阶段。
 - `sjs_execute` 可驱动图表、形状、切片器与数据透视表（`shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` 包随插件一起分发）；png 截图会覆盖浮动对象，即使它位于已用单元格范围之外，或处于没有已用单元格的工作表（如透视表布局页）。
 - 越界写入会自动扩展工作表而不是被丢弃；针对同一工作簿的操作串行执行，因此并行工具调用不会互相覆盖。

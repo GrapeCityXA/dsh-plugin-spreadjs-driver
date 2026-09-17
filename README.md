@@ -4,12 +4,14 @@
 
 English · [简体中文](README.zh-CN.md)
 
-`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds a headless SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications.
+`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser that the plugin starts per operation; nobody sees it, and it exits with the operation.
 
 ## Requirements
 
 - **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.1-rc.2` or `0.1.2-rc.1`).
-- For `.pdf` export and `png` screenshots that contain CJK text, at least one CJK-capable `.ttf`/`.otf` font must be discoverable on the host (system font directories are scanned automatically; add others via the `GC_SJS_PDF_FONT_DIRS` environment variable — `.ttc` files are not supported).
+- **Microsoft Edge or Google Chrome installed.** The engine runs in a real browser process (no browser binary ships with the plugin, and no browser UI is ever shown). Edge is preferred when both exist; set the `browserPath` plugin option to point at a specific executable. Nothing found → `SJS_BROWSER_UNAVAILABLE`, naming the paths that were probed.
+- A writable temp directory for the browser's throwaway profile.
+- For `.pdf` export containing CJK text, at least one CJK-capable `.ttf`/`.otf` font must be discoverable on the host (system font directories are scanned automatically; add others via the `GC_SJS_PDF_FONT_DIRS` environment variable — `.ttc` files are not supported). PNG screenshots need nothing extra: the browser has real fonts.
 
 ## Install
 
@@ -79,12 +81,12 @@ s.setFormula(5, 1, '=SUM(B2:B5)')
 return { total: s.getValue(5, 1) }
 ```
 
-See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, and the error-code recovery table, and `docs/architecture.md` for how the headless engine is embedded.
+See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, and the error-code recovery table, and `docs/architecture.md` for how the engine runtime is embedded.
 
 ## Notes
 
 - The unlicensed engine marks its output, and that is expected: a `png` render carries an **"Evaluation Version"** stamp on the canvas, and an exported `.xlsx` carries an extra worksheet of that name (`.pdf` and `.csv` do not). It is left in place deliberately — the plugin does not strip it, and neither should the agent. It does not affect the data.
-- Screenshot `png` text is re-rendered in one readable CJK-capable font, so per-cell font/weight variety is flattened **in the image only**; the workbook file is never modified by a screenshot.
+- A screenshot `png` is the engine's own rendering in a real browser: fonts, weights and colours are the real ones, and the workbook file is never modified by a screenshot.
 - Worktrees support `create`/`list` in this release; approval (`merge`/`discard`) is a later phase.
 - `sjs_execute` can drive charts, shapes, slicers and pivot tables (the `shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` packs ship with the plugin); a `png` snapshot covers floating objects even when they sit outside the used cell range or on a sheet with no used cells (a pivot layout).
 - Out-of-range writes grow the sheet instead of being dropped, and operations naming the same workbook run serially, so parallel tool calls cannot lose each other's edits.

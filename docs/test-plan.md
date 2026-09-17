@@ -29,7 +29,7 @@
 | # | 用例 | 状态 | 说明 |
 |---|---|---|---|
 | B1 | 常规表截图（值/色/边框/合并/CJK） | ✅ | worker-smoke + tool-smoke |
-| B2 | 带数字格式的表 | ✅ | 回归「renders a formatted sheet」（曾因缺 canvas 构造器全局必崩） |
+| B2 | 带数字格式的表 | ✅ | 回归「renders a formatted sheet」（jsdom 时代曾因缺 canvas 构造器全局必崩；真浏览器下该类问题整类消失，回归保留作护栏） |
 | B3 | 视口外的浮动对象（图表） | ✅ | 回归「covers a chart placed outside the used range」 |
 | B4 | 无已用范围的透视表页 + 越界切片器 | ✅ | 回归「covers a pivot sheet whose slicer sits past the viewport」 |
 | B5 | 超大表：精确测算 + 超限裁剪 | ✅ | 回归「measures content exactly and clips past the raster ceiling」；`clipped: true` |

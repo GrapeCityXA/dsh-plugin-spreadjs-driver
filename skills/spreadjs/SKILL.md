@@ -8,7 +8,7 @@ description: Create, inspect, edit, import, export and screenshot real Excel wor
 Do spreadsheet work with the bundled `sjs_*` tools — never hand-edit a binary
 .xlsx, and never substitute openpyxl / python-pptx / pandas / JS zip writers for
 SpreadJS. Complex or one-off operations go through `sjs_execute`, which runs
-real SpreadJS code in the headless engine.
+real SpreadJS code in the engine (a hidden browser process per call).
 
 **The file the user cares about is the `.xlsx`.** Beside it the engine keeps a
 `.ssjson` companion: its own lossless working format, meant to be read by the
@@ -50,9 +50,10 @@ ignore it; do not explain the format or make it part of the task.
   tools when the work is batch, long-running, or nobody is watching a designer.
 - Rows and columns are **zero-based** in code (`setValue(0, 0)` is cell A1).
   A used-range `row`/`col` is also zero-based; `rowCount`/`colCount` are counts.
-- The sheet-name dictionary is not registered by headless `fromJSON()`, so
-  `spread.getSheetByName("…")` may return undefined even for sheets that exist.
-  Use the injected `sheet('name')` helper (it scans by index) instead.
+- The sheet-name dictionary is not registered by `fromJSON()`, so
+  `spread.getSheet("…")` can return undefined even for sheets that exist
+  (`getSheetByName` does not exist at all). Use the injected `sheet('name')`
+  helper — it scans by index — instead of resolving sheets yourself.
 - **The unlicensed engine marks its output; that is expected, and you leave it
   alone.** A `png` render carries an "Evaluation Version" stamp on the canvas, and
   an exported `.xlsx` carries an extra worksheet of that name (a `.pdf` and a
@@ -116,10 +117,10 @@ session where nobody is watching a designer.
    further edits — re-export rather than assuming it is current. Tool success is
    not correctness evidence — verify task-specific assertions.
 
-`format: "png"` text is re-rendered in one readable CJK-capable font, so
-per-cell font/weight variety is flattened in the image only; the png also shows
-the engine's *Evaluation Version* watermark (see above); the workbook file is
-never modified by a screenshot. A png snapshot attaches to the tool result as
+A `format: "png"` snapshot is the engine's own rendering in a real browser, so
+fonts, weights and colours are the real ones — no flattening, no substitution.
+The png also shows the engine's *Evaluation Version* watermark (see above); the
+workbook file is never modified by a screenshot. A png snapshot attaches to the tool result as
 an image you can see **only when the current model accepts image input**;
 otherwise the tool returns the file path and the png is still written to the
 workspace but you cannot see it: on a text-only route `read_image` refuses for
@@ -171,10 +172,9 @@ approximation.
 - **Or auto-fit what you filled.** `sheet.autoFitColumn(c)` /
   `sheet.autoFitRow(r)` size a row/column to its content; set
   `spread.options.autoFitType = GC.Spread.Sheets.AutoFitType.cellWithHeader`
-  first to include header text. In this headless engine text measurement can
-  come out *narrower* than a real CJK font, so after auto-fitting CJK-heavy
-  columns, widen them by a few px or return the resulting widths and confirm
-  nothing clips.
+  first to include header text. Text is measured with the machine's real fonts
+  here, so auto-fit is trustworthy; still return the resulting widths for
+  CJK-heavy columns and confirm nothing clips, rather than trusting the call.
 - **Format and align numbers; never leave them as raw left-aligned text.** Use
   one `Style` per distinct look — header / data / total — and reuse it. Set the
   numeric formatter (`#,##0`, `0.00`, `0%`, a date format) and `hAlign` right on
@@ -202,8 +202,8 @@ alongside the used range, and treat a screenshot as a second opinion only.
 
 ## sjs_execute environment
 
-Code runs as the body of an `async` function in an isolated `vm` context with in
-scope:
+Code runs as the body of an `async` function inside the engine that is loaded for
+this one call, with in scope:
 
 - `spread` and `workbook` — the active `Spread.Sheets.Workbook`.
 - `GC` — the `GC.Spread` namespace (enums, `GC.Spread.Sheets.UsedRangeType`, …).
@@ -270,7 +270,10 @@ Operations that name the **same workbook run one at a time, in arrival order**;
 different workbooks still run in parallel. Issue parallel `sjs_execute` calls
 against one workbook freely — each sees the previous one's result.
 
-There is **no `require`, no `process`, no `fs`, no DOM**. Common calls:
+There is **no `require`, no `process`, no `fs`**, and no network access. (The
+engine is a hidden browser, so a `window` technically exists — ignore it. Nothing
+about editing a workbook needs it, and nothing you do with it is supported.)
+Common calls:
 `sheet().setValue(r, c, v)`, `.getValue(r, c)`, `.setFormula(r, c, '=SUM(…)')`,
 `.setColumnWidth(c, w)` and `.setRowHeight(r, h)` (both in **pixels** — see the
 layout section below), `.name('…')` (both getter and setter),
@@ -417,7 +420,8 @@ not free text.
 | `SJS_RESULT_TOO_LARGE`, `SJS_NON_SERIALIZABLE_RESULT` | Return value too big or not JSON | Return a compact summary or call `snapshot()`. |
 | `SJS_UNSUPPORTED_IMPORT_FORMAT` | The engine cannot convert this source extension (Excel family variants beyond `.xlsx` reach the worker without a converter) | Convert the source to `.xlsx`/`.csv` first, then import. |
 | `SJS_FILE_READ_FAILED`, `SJS_INVALID_SSJSON`, `SJS_FILE_WRITE_FAILED` | File-level IO / not a valid workbook | Correct the path/input; regenerate the `.ssjson` if corrupt. |
-| `SJS_PDF_UNAVAILABLE`, `SJS_PDF_FONT_UNAVAILABLE`, `SJS_PNG_FONT_UNAVAILABLE`, `SJS_PNG_RENDER_FAILED` | PDF/PNG backend missing a font or failing to render | Headless rendering needs at least one CJK-capable `.ttf`/`.otf` registered on the host (`.ttc` unsupported). If PDF is unusable, fall back to `sjs_screenshot` `format: "png"`. |
+| `SJS_PDF_UNAVAILABLE`, `SJS_PDF_FONT_UNAVAILABLE`, `SJS_PNG_RENDER_FAILED` | PDF backend missing, no embeddable font, or the raster failed | PDF export needs at least one CJK-capable `.ttf`/`.otf` on the host (`.ttc` unsupported). A `png` screenshot needs no font — the browser has them — so if PDF is unusable, fall back to `sjs_screenshot` `format: "png"`. |
+| `SJS_BROWSER_UNAVAILABLE`, `SJS_BROWSER_FAILED` | No Edge/Chrome on the machine, or the browser would not start | The engine runs in a real browser. Install Microsoft Edge or Google Chrome, or point the plugin's `browserPath` at one. Retry once before reporting — a launch is occasionally transient. |
 | `SJS_WORKER_TIMEOUT`, `SJS_WORKER_INVALID_RESPONSE`, `SJS_WORKER_FAILED`, `SJS_BAD_REQUEST` | Worker/transport failure | Retry once with simpler work; report if persistent. |
 | `SJS_LIVE_NO_CLIENT` | `sjs_live_execute` found no designer connected | Nobody has a workbook open in the DSH web UI. Either ask the user to open one, or do the work against a file with `sjs_execute` instead — do not retry the live tool in a loop. |
 | `SJS_LIVE_UNKNOWN_TARGET` | A designer is connected but `target` names a workbook it does not hold | Omit `target` to use whichever designer is connected; the message lists the ids that *are* attached. |
