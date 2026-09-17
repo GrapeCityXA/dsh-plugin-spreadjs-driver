@@ -50,9 +50,10 @@
     "test:worker": "node test/worker-smoke.mjs",
     "test:tool": "node test/tool-smoke.mjs",
     "test:live": "node test/live-channel-smoke.mjs",
+    "test:client": "node test/client-bridge-smoke.mjs",
     "test:pack": "node scripts/smoke-from-pack.mjs",
-    "test:all": "pnpm run typecheck && pnpm run build && node test/worker-smoke.mjs && node test/tool-smoke.mjs && node test/live-channel-smoke.mjs",
-    "ci": "pnpm run typecheck && pnpm run verify:public-dependencies && pnpm run build && pnpm run test:worker && pnpm run test:tool && pnpm run test:live && pnpm run verify:pack && pnpm run test:pack",
+    "test:all": "pnpm run typecheck && pnpm run build && node test/worker-smoke.mjs && node test/tool-smoke.mjs && node test/live-channel-smoke.mjs && node test/client-bridge-smoke.mjs",
+    "ci": "pnpm run typecheck && pnpm run verify:public-dependencies && pnpm run build && pnpm run test:worker && pnpm run test:tool && pnpm run test:live && pnpm run test:client && pnpm run verify:pack && pnpm run test:pack",
     "prepack": "node scripts/build.mjs",
     "prepublishOnly": "pnpm run ci"
   },
