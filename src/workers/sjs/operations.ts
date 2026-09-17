@@ -1,43 +1,47 @@
 /**
- * SpreadJS worker operations (new / status / execute). Runs inside the one-shot
- * worker process after `loadSpreadJS()` has booted the headless environment.
+ * SpreadJS worker operations (new / status / execute / import / export /
+ * screenshot), driven against a real browser.
  *
- * Execution sandbox: user code runs in a `node:vm` context with only
- * spreadsheet handles and whitelisted helpers in scope — no `require`, `process`
- * or `fs`. This is hygiene, not a security boundary: the real isolation is the
- * one-shot OS process plus host-side workspace authorization.
+ * This module is the Node-side half: it owns the request envelope's semantics —
+ * which paths mean what, which failure is which code, which write must be atomic
+ * — and delegates everything that has to happen inside a browser to
+ * `browser/runtime.ts`.
+ *
+ * Two properties survived the runtime swap unchanged and are load-bearing:
+ *
+ *  - **Every path arriving here is already authorized by the host.** Nothing in
+ *    this file re-derives or widens that decision, and the only paths the page
+ *    ever receives are ones this file built a URL for.
+ *  - **Every write is temp+rename.** A workbook file that is half written still
+ *    parses as JSON, so an interrupted write must never replace the real file.
+ *
+ * The script sandbox also changed shape: user code now runs as a function inside
+ * the page rather than in a `node:vm` context. That was never the security
+ * boundary (the one-shot OS process plus host-side workspace authorization is),
+ * and the workspace confinement of `io.*` is unchanged — it is re-checked Node
+ * side on every request the sandbox makes.
  */
-import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { createContext, runInContext } from 'node:vm'
-import { basenameWithoutExtension, errorMessage } from './util.ts'
+import { extname } from 'node:path'
 import type { JsonValue, SjsWorkerRequest } from '../../shared/protocol.ts'
 import { SjsWorkerError } from './errors.ts'
-import { discoverPdfFonts, registerPdfFonts } from './fonts.ts'
-import { loadSpreadJS } from './headless.ts'
-import { renderWorkbookToPng } from './render-png.ts'
-
-// SpreadJS types are not declared in this package; the headless environment is
-// typed loosely at the worker boundary. Every GC/spread access below mirrors the
-// phase-0 spike probes.
-type Gc = any
-type Workbook = any
+import { copyFileAtomic } from './files.ts'
+import { loadRuntime, type BrowserRuntime } from './browser/runtime.ts'
 
 /** Perform one worker request and return its structured JSON result. */
 export async function runOperation(request: SjsWorkerRequest): Promise<JsonValue> {
   switch (request.op) {
     case 'new':
-      return runNew(request.targetPath)
+      return await runNew(request.targetPath)
     case 'status':
-      return runStatus(request.sourcePath)
+      return await runStatus(request.sourcePath)
     case 'execute':
-      return runExecute(request)
+      return await runExecute(request)
     case 'import':
-      return runImport(request)
+      return await runImport(request)
     case 'export':
-      return runExport(request)
+      return await runExport(request)
     case 'screenshot':
-      return runScreenshot(request)
+      return await runScreenshot(request)
     default: {
       const op = (request as { op?: string }).op ?? '?'
       throw new SjsWorkerError(`operation not implemented yet: ${op}`, 'SJS_OP_NOT_IMPLEMENTED')
@@ -45,39 +49,56 @@ export async function runOperation(request: SjsWorkerRequest): Promise<JsonValue
   }
 }
 
+// ------------------------------------------------------------------ runtime
+
+let pending: Promise<BrowserRuntime> | undefined
+let running: BrowserRuntime | undefined
+
+/**
+ * Boot the browser runtime on first use, once per worker process.
+ *
+ * The browser is the only runtime: there is no fallback path, by decision. When
+ * it cannot start, the failure is classified (`SJS_BROWSER_UNAVAILABLE` when no
+ * Edge/Chrome exists, `SJS_BROWSER_FAILED` when one exists but will not run)
+ * rather than surfacing as a stack trace the model cannot act on.
+ */
+async function engine(): Promise<BrowserRuntime> {
+  pending ??= loadRuntime({ log: (message) => { process.stderr.write(`${message}\n`) } }).then((runtime) => {
+    running = runtime
+    return runtime
+  })
+  return await pending
+}
+
+/**
+ * Shut the runtime down: kill the browser and stop the file server.
+ *
+ * Called from the entry point on BOTH paths, including failure: the process is
+ * one-shot, and a browser left running would outlive it (along with its profile
+ * directory).
+ */
+export async function closeRuntime(): Promise<void> {
+  const runtime = running
+  running = undefined
+  pending = undefined
+  if (runtime !== undefined) await runtime.close()
+}
+
+// --------------------------------------------------------------- operations
+
 async function runNew(targetPath: string): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
-  const spread: Workbook = new GC.Spread.Sheets.Workbook()
-  const active = spread.getActiveSheet()
-  if (active === null || active === undefined) spread.addSheet(0)
-  await persistSpread(targetPath, spread)
+  await (await engine()).create(targetPath)
   return { created: true, file: targetPath }
 }
 
 async function runStatus(sourcePath: string): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
-  const spread = await loadSpread(sourcePath, GC)
-  try {
-    return summarizeSpread(spread, GC) as unknown as JsonValue
-  } finally {
-    destroySpread(spread)
-  }
+  const summary = await (await engine()).load(sourcePath)
+  return summary as unknown as JsonValue
 }
 
 async function runExecute(request: Extract<SjsWorkerRequest, { op: 'execute' }>): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
-  const spread = await loadSpread(request.sourcePath, GC)
-  try {
-    const returned = await runUserCode(request.code, spread, GC, request.workspaceRoot)
-    await persistSpread(request.sourcePath, spread)
-    const result = await materializeResult(returned, spread, GC)
-    return result as unknown as JsonValue
-  } catch (error) {
-    if (error instanceof SjsWorkerError) throw error
-    throw new SjsWorkerError(`script failed: ${errorMessage(error)}`, 'SJS_SCRIPT_ERROR')
-  } finally {
-    destroySpread(spread)
-  }
+  const value = await (await engine()).execute(request.sourcePath, request.workspaceRoot, request.code)
+  return value as JsonValue
 }
 
 /** File formats this worker accepts as an import source, by file extension. */
@@ -106,7 +127,6 @@ function importFormatForPath(sourcePath: string): ImportSourceFormat | undefined
  * import converges on it. Classifies unknown source extensions up front.
  */
 async function runImport(request: Extract<SjsWorkerRequest, { op: 'import' }>): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
   const format = importFormatForPath(request.sourcePath)
   if (format === undefined) {
     throw new SjsWorkerError(
@@ -114,43 +134,23 @@ async function runImport(request: Extract<SjsWorkerRequest, { op: 'import' }>): 
       'SJS_UNSUPPORTED_IMPORT_FORMAT',
     )
   }
+  const runtime = await engine()
 
   if (format === 'ssjson') {
     // Canonical → canonical: load + re-persist, which also validates the JSON.
-    const spread = await loadSpread(request.sourcePath, GC)
-    try {
-      await persistSpread(request.targetPath, spread)
-      return { format, file: request.targetPath, ...summarizeSpread(spread, GC) } as unknown as JsonValue
-    } finally {
-      destroySpread(spread)
-    }
+    const summary = await runtime.load(request.sourcePath)
+    await runtime.saveAs(request.targetPath)
+    return { format, file: request.targetPath, ...summary } as unknown as JsonValue
   }
 
-  // xlsx / csv: read source bytes and hand them to the io module on a fresh
-  // workbook. The headless FileReader realm patch makes blob imports reliable.
-  let sourceBytes: Buffer
-  try {
-    sourceBytes = await readFile(request.sourcePath)
-  } catch (error) {
-    throw new SjsWorkerError(`cannot read import source: ${errorMessage(error)}`, 'SJS_FILE_READ_FAILED')
-  }
-  const spread: Workbook = new GC.Spread.Sheets.Workbook()
-  try {
-    // CSV import lands in the active sheet; make sure a fresh workbook has one
-    // (a host-less Workbook may construct with no default sheet).
-    if (spread.getActiveSheet() === null || spread.getActiveSheet() === undefined) spread.addSheet(0)
-    const fileType = GC.Spread.Sheets.FileType[format]
-    await importBlobInto(spread, sourceBytes, fileType)
-    await persistSpread(request.targetPath, spread)
-    return {
-      format,
-      file: request.targetPath,
-      bytes: sourceBytes.length,
-      ...summarizeSpread(spread, GC),
-    } as unknown as JsonValue
-  } finally {
-    destroySpread(spread)
-  }
+  const imported = await runtime.importInto(request.sourcePath, request.targetPath, format)
+  return {
+    format,
+    file: request.targetPath,
+    bytes: imported.bytes,
+    sheets: imported.sheets,
+    activeSheet: imported.activeSheet,
+  } as unknown as JsonValue
 }
 
 /**
@@ -160,653 +160,50 @@ async function runImport(request: Extract<SjsWorkerRequest, { op: 'import' }>): 
  * empty shell when no embeddable font is available.
  */
 async function runExport(request: Extract<SjsWorkerRequest, { op: 'export' }>): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
-  const fileType = GC.Spread.Sheets.FileType
+  const runtime = await engine()
 
   if (request.format === 'ssjson') {
     // Canonical → canonical: a byte copy is exact and cheapest.
     await copyFileAtomic(request.sourcePath, request.outputPath)
-    const spread = await loadSpread(request.sourcePath, GC)
-    try {
-      return { format: request.format, file: request.outputPath, ...summarizeSpread(spread, GC) } as unknown as JsonValue
-    } finally {
-      destroySpread(spread)
-    }
+    const summary = await runtime.load(request.sourcePath)
+    return { format: request.format, file: request.outputPath, ...summary } as unknown as JsonValue
   }
 
-  const spread = await loadSpread(request.sourcePath, GC)
-  try {
-    if (request.format === 'xlsx') {
-      const bytes = await exportToBuffer(spread, { fileType: fileType.excel })
-      await writeBytesAtomic(request.outputPath, bytes)
-      return {
-        format: 'xlsx',
-        file: request.outputPath,
-        bytes: bytes.length,
-        ...summarizeSpread(spread, GC),
-      } as unknown as JsonValue
-    }
-
-    if (request.format === 'csv') {
-      const active = activeSheetOrThrow(spread)
-      const used = usedRangeOf(active, GC)
-      const options =
-        used === undefined
-          ? { fileType: fileType.csv, range: { sheetIndex: spread.getActiveSheetIndex(), row: 0, column: 0, rowCount: 1, columnCount: 1 } }
-          : { fileType: fileType.csv, range: { ...used, sheetIndex: spread.getActiveSheetIndex() } }
-      const bytes = await exportToBuffer(spread, options)
-      await writeBytesAtomic(request.outputPath, bytes)
-      return {
-        format: 'csv',
-        file: request.outputPath,
-        bytes: bytes.length,
-        sheet: active.name(),
-        ...(used === undefined ? {} : { usedRange: used }),
-      } as unknown as JsonValue
-    }
-
-    // pdf — register fonts first; the guard throws SJS_PDF_FONT_UNAVAILABLE
-    // rather than let savePDF silently drop unregistered text.
-    const fonts = registerPdfFonts(GC, discoverPdfFonts(), (message, code) => new SjsWorkerError(message, code))
-    const bytes = await savePdfToBuffer(spread, { title: basenameWithoutExtension(request.outputPath) })
-    await writeBytesAtomic(request.outputPath, bytes)
-    return { format: 'pdf', file: request.outputPath, bytes: bytes.length, fonts } as unknown as JsonValue
-  } finally {
-    destroySpread(spread)
+  if (request.format === 'pdf') {
+    const pdf = await runtime.exportPdf(request.sourcePath, request.outputPath)
+    return { format: 'pdf', file: request.outputPath, bytes: pdf.bytes, fonts: pdf.fonts } as unknown as JsonValue
   }
+
+  return await runtime.exportWorkbook(request.sourcePath, request.outputPath, request.format) as unknown as JsonValue
 }
 
 /**
  * Render a visual snapshot of a canonical .ssjson workbook.
  *
- * format 'png' rasterizes the active sheet through the headless node-canvas
- * backend (constructor-bound hosts, content-fitted canvas, forced CJK font — see
- * render-png.ts). format 'pdf' reuses the PDF/print backend, so a "visual"
- * snapshot is available even before the platform confirms it can present image
- * tool results (task 6). The source file is never written back; the fonts a PNG
- * forces exist only on the in-memory capture workbook.
+ * format 'png' rasterizes the active sheet through the browser's own canvas:
+ * the engine paints exactly as it does for a user, so no font is forced, no
+ * constructor is injected, and the pixels are the real rendering. The evaluation
+ * watermark is part of that rendering and is deliberately left in place.
+ * format 'pdf' reuses the PDF backend, so a "visual" snapshot is available even
+ * before the platform confirms it can present image tool results (task 6).
+ * The source file is never written back.
  */
 async function runScreenshot(request: Extract<SjsWorkerRequest, { op: 'screenshot' }>): Promise<JsonValue> {
-  if (request.format === 'pdf') return runScreenshotPdf(request.sourcePath, request.outputPath)
-  return runScreenshotPng(request.sourcePath, request.outputPath)
-}
-
-async function runScreenshotPng(sourcePath: string, outputPath: string): Promise<JsonValue> {
-  const { GC, window } = loadSpreadJS()
-  const shot = await renderWorkbookToPng({ GC, window }, sourcePath)
-  await writeBytesAtomic(outputPath, shot.png)
+  const runtime = await engine()
+  if (request.format === 'pdf') {
+    const pdf = await runtime.screenshotPdf(request.sourcePath, request.outputPath)
+    return { format: 'pdf', file: request.outputPath, bytes: pdf.bytes, fonts: pdf.fonts } as unknown as JsonValue
+  }
+  const shot = await runtime.screenshotPng(request.sourcePath, request.outputPath)
   return {
     format: 'png',
-    file: outputPath,
-    bytes: shot.png.length,
+    file: request.outputPath,
+    bytes: shot.bytes,
     width: shot.width,
     height: shot.height,
     sheet: shot.sheet,
-    ...(shot.used === null ? {} : { usedRange: shot.used }),
+    ...(shot.used === null ? {} : { usedRange: { row: shot.used.row, rowCount: shot.used.rowCount, column: shot.used.col, columnCount: shot.used.colCount } }),
     font: shot.font,
-    ...(shot.clipped ? { clipped: true } : {}),
+    ...(shot.clipped === true ? { clipped: true } : {}),
   } as unknown as JsonValue
-}
-
-async function runScreenshotPdf(sourcePath: string, outputPath: string): Promise<JsonValue> {
-  const { GC } = loadSpreadJS()
-  const spread = await loadSpread(sourcePath, GC)
-  try {
-    const fonts = registerPdfFonts(GC, discoverPdfFonts(), (message, code) => new SjsWorkerError(message, code))
-    const bytes = await savePdfToBuffer(spread, { title: basenameWithoutExtension(outputPath) })
-    await writeBytesAtomic(outputPath, bytes)
-    return { format: 'pdf', file: outputPath, bytes: bytes.length, fonts } as unknown as JsonValue
-  } finally {
-    destroySpread(spread)
-  }
-}
-
-/** Import raw source bytes into a workbook through the io module (blob API). */
-async function importBlobInto(spread: Workbook, sourceBytes: Buffer, fileType: unknown): Promise<void> {
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const blob = new Blob([sourceBytes])
-      spread.import(
-        blob,
-        () => resolve(),
-        (error: unknown) => reject(new SjsWorkerError(`spread.import failed: ${ioErrorMessage(error)}`, 'SJS_IMPORT_FAILED')),
-        { fileType },
-      )
-    })
-  } catch (error) {
-    if (error instanceof SjsWorkerError) throw error
-    throw new SjsWorkerError(`spread.import failed: ${errorMessage(error)}`, 'SJS_IMPORT_FAILED')
-  }
-}
-
-/** Export a workbook to a Node Buffer through the io module (blob API). */
-async function exportToBuffer(spread: Workbook, options: Record<string, unknown>): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    try {
-      spread.export(
-        (blob: unknown) => {
-          if (typeof (blob as { arrayBuffer?: unknown })?.arrayBuffer !== 'function') {
-            reject(new SjsWorkerError(`export blob has no arrayBuffer(): ${describeValue(blob)}`, 'SJS_EXPORT_FAILED'))
-            return
-          }
-          ;(blob as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer().then(
-            (ab) => resolve(Buffer.from(ab)),
-            (error: unknown) => reject(new SjsWorkerError(`export arrayBuffer failed: ${errorMessage(error)}`, 'SJS_EXPORT_FAILED')),
-          )
-        },
-        (error: unknown) => reject(new SjsWorkerError(`spread.export failed: ${ioErrorMessage(error)}`, 'SJS_EXPORT_FAILED')),
-        options,
-      )
-    } catch (error) {
-      reject(new SjsWorkerError(`spread.export threw: ${errorMessage(error)}`, 'SJS_EXPORT_FAILED'))
-    }
-  })
-}
-
-/** Best-effort one-line description of a value (for diagnosing blob shapes). */
-function describeValue(value: unknown): string {
-  if (typeof value === 'string') return `string(${value.length})`
-  if (typeof value !== 'object' || value === null) return String(value)
-  const ctor = (value as { constructor?: { name?: string } }).constructor
-  const keys = Object.keys(value).slice(0, 8).join(',')
-  return `${ctor?.name ?? 'object'}{${keys}}`
-}
-
-/** Export a workbook to a PDF Buffer via savePDF (fonts must be pre-registered). */
-async function savePdfToBuffer(spread: Workbook, options: Record<string, unknown>): Promise<Buffer> {
-  return new Promise<Buffer>((resolve, reject) => {
-    try {
-      spread.savePDF(
-        (blob: { arrayBuffer: () => Promise<ArrayBuffer> }) => {
-          blob.arrayBuffer().then((ab) => resolve(Buffer.from(ab)), (error: unknown) => reject(new SjsWorkerError(`pdf arrayBuffer failed: ${errorMessage(error)}`, 'SJS_PDF_EXPORT_FAILED')))
-        },
-        (error: unknown) => reject(new SjsWorkerError(`savePDF failed: ${ioErrorMessage(error)}`, 'SJS_PDF_EXPORT_FAILED')),
-        options,
-      )
-    } catch (error) {
-      reject(new SjsWorkerError(`savePDF threw: ${errorMessage(error)}`, 'SJS_PDF_EXPORT_FAILED'))
-    }
-  })
-}
-
-/** Resolve the active sheet or fail with a clear code. */
-function activeSheetOrThrow(spread: Workbook): any {
-  const active = spread.getActiveSheet()
-  if (active === null || active === undefined) {
-    throw new SjsWorkerError('workbook has no active sheet to export', 'SJS_SHEET_NOT_FOUND')
-  }
-  return active
-}
-
-/**
- * Read the content used range (data + formula) of a sheet, or undefined when
- * empty. CSV text comes only from cell values and formula results, so the union
- * of the `data` and `formula` used ranges is the precise bound — the `all`
- * bitmask instead reports colCount -1 on xlsx round-trips (it counts layout
- * extent), which would make a CSV export whole-width or, worse, silently drop
- * to a single cell.
- */
-function usedRangeOf(sheet: any, GC: Gc): { row: number; rowCount: number; column: number; columnCount: number } | undefined {
-  try {
-    const type = GC.Spread.Sheets.UsedRangeType
-    const range = sheet.getUsedRange(type.data | type.formula)
-    if (range === null || range === undefined) return undefined
-    // SpreadJS exposes the origin column as `.col` / `.colCount`, not `.column`.
-    const { row, rowCount, col, colCount } = range
-    if (typeof row !== 'number' || typeof col !== 'number') return undefined
-    // A negative count is SpreadJS's "extends to the end of the sheet" sentinel.
-    // Never treat it as an empty range (silent single-cell export); clamp.
-    const bounded = (count: number | undefined | null, origin: number, sheetCount: number): number | undefined => {
-      const n = typeof count === 'number' && Number.isFinite(count) ? count : NaN
-      const span = Number.isNaN(n) || n < 1 ? sheetCount - origin : n
-      return span >= 1 ? span : undefined
-    }
-    const rCount = bounded(rowCount, row, sheet.getRowCount())
-    const cCount = bounded(colCount, col, sheet.getColumnCount())
-    if (rCount === undefined || cCount === undefined) return undefined
-    return { row, rowCount: rCount, column: col, columnCount: cCount }
-  } catch {
-    return undefined
-  }
-}
-
-/** Copy a file atomically (temp + rename), classifying write failures. */
-async function copyFileAtomic(sourcePath: string, targetPath: string): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true })
-  const tempPath = `${targetPath}.tmp-${process.pid}`
-  try {
-    await copyFile(sourcePath, tempPath)
-    await rename(tempPath, targetPath)
-  } catch (error) {
-    throw new SjsWorkerError(`cannot write file: ${errorMessage(error)}`, 'SJS_FILE_WRITE_FAILED')
-  }
-}
-
-/** Write a binary buffer atomically (temp + rename). */
-async function writeBytesAtomic(targetPath: string, bytes: Buffer): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true })
-  const tempPath = `${targetPath}.tmp-${process.pid}`
-  try {
-    await writeFile(tempPath, bytes)
-    await rename(tempPath, targetPath)
-  } catch (error) {
-    throw new SjsWorkerError(`cannot write file: ${errorMessage(error)}`, 'SJS_FILE_WRITE_FAILED')
-  }
-}
-
-/** Extract a readable message from an io-module error argument. */
-function ioErrorMessage(error: unknown): string {
-  if (typeof error === 'object' && error !== null) {
-    const candidate = (error as { errorMessage?: unknown; message?: unknown }).errorMessage ?? (error as { message?: unknown }).message
-    if (typeof candidate === 'string' && candidate.length > 0) return candidate
-    const stack = (error as { stack?: unknown }).stack
-    if (typeof stack === 'string' && stack.length > 0) return stack
-  }
-  return errorMessage(error)
-}
-
-/** Parse .ssjson text, classifying malformed JSON as SJS_INVALID_SSJSON. */
-function parseWorkbookJson(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch (error) {
-    throw new SjsWorkerError(`workbook file is not valid .ssjson JSON: ${errorMessage(error)}`, 'SJS_INVALID_SSJSON')
-  }
-}
-
-/** Load an .ssjson workbook file into a fresh Workbook instance. */
-async function loadSpread(sourcePath: string, GC: Gc): Promise<Workbook> {
-  let text: string
-  try {
-    text = await readFile(sourcePath, 'utf8')
-  } catch (error) {
-    throw new SjsWorkerError(`cannot read workbook file: ${errorMessage(error)}`, 'SJS_FILE_READ_FAILED')
-  }
-  const json = parseWorkbookJson(text)
-  const spread: Workbook = new GC.Spread.Sheets.Workbook()
-  try {
-    spread.fromJSON(json)
-  } catch (error) {
-    destroySpread(spread)
-    throw new SjsWorkerError(`cannot parse workbook: ${errorMessage(error)}`, 'SJS_INVALID_SSJSON')
-  }
-  return spread
-}
-
-/** Persist a workbook as .ssjson, atomically (write temp then rename). */
-async function persistSpread(targetPath: string, spread: Workbook): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true })
-  const json = serializeSafe(spread.toJSON())
-  const tempPath = `${targetPath}.tmp-${process.pid}`
-  try {
-    await writeFile(tempPath, JSON.stringify(json), 'utf8')
-    await rename(tempPath, targetPath)
-  } catch (error) {
-    throw new SjsWorkerError(`cannot write workbook file: ${errorMessage(error)}`, 'SJS_FILE_WRITE_FAILED')
-  }
-}
-
-/** Run user code as an async function body in an isolated vm context. */
-/**
- * Guard the Worksheet class against SpreadJS's two silent-data-loss traps.
- *
- * 1. A fresh worksheet is 200 rows x 20 columns, and `setValue`/`setFormula`/
- *    `setArray` beyond those bounds are **silently dropped** — no throw, no
- *    warning, and a read-back of early rows still looks correct. Writing more
- *    rows than the default is ordinary usage, so the guards grow the sheet to
- *    fit the write instead (and throw loudly past the engine's own ceiling,
- *    which stays far better than dropping data).
- * 2. Excel and SpreadJS both reject `: \ / ? * [ ]` in a sheet name, but the
- *    engine reports only "Not supported exception", which a model cannot act
- *    on. The name setter validates up front and names the offending characters.
- *
- * Installed once per worker process, on the prototype, so code that reaches a
- * sheet through `spread.getSheet(i)` is covered as well as the `sheet()` helper.
- */
-function installWorksheetGuards(GC: Gc): void {
-  const prototype = GC?.Spread?.Sheets?.Worksheet?.prototype
-  if (prototype === undefined || prototype === null) return
-  if (prototype.__sjsGuardsInstalled === true) return
-  try {
-    Object.defineProperty(prototype, '__sjsGuardsInstalled', { value: true, enumerable: false })
-  } catch {
-    // a frozen prototype would defeat the guards entirely; let the write fail loudly
-  }
-
-  const MAX_ROWS = 1_048_576
-  const MAX_COLUMNS = 16_384
-  // Grow past the target so a loop that writes N rows does not call resize once
-  // per row: a per-row bump measured ~15x slower than a single upsizing on a
-  // 20k-row write, and pushed it past the 60s operation budget.
-  const GROWTH_STEP_ROWS = 512
-  const GROWTH_STEP_COLUMNS = 64
-
-  const grow = (sheet: any, row: unknown, col: unknown): void => {
-    if (typeof row === 'number' && Number.isFinite(row) && row >= 0) {
-      const rows = sheet.getRowCount()
-      if (row >= rows) {
-        if (row >= MAX_ROWS) {
-          throw new SjsWorkerError(
-            `row ${String(row)} is past the spreadsheet limit of ${String(MAX_ROWS)} rows`,
-            'SJS_SHEET_LIMIT_EXCEEDED',
-          )
-        }
-        sheet.setRowCount(nextExtent(rows, row, MAX_ROWS, GROWTH_STEP_ROWS))
-      }
-    }
-    if (typeof col === 'number' && Number.isFinite(col) && col >= 0) {
-      const columns = sheet.getColumnCount()
-      if (col >= columns) {
-        if (col >= MAX_COLUMNS) {
-          throw new SjsWorkerError(
-            `column ${String(col)} is past the spreadsheet limit of ${String(MAX_COLUMNS)} columns`,
-            'SJS_SHEET_LIMIT_EXCEEDED',
-          )
-        }
-        sheet.setColumnCount(nextExtent(columns, col, MAX_COLUMNS, GROWTH_STEP_COLUMNS))
-      }
-    }
-  }
-
-  for (const method of ['setValue', 'setFormula'] as const) {
-    const original = prototype[method]
-    if (typeof original !== 'function') continue
-    prototype[method] = function guarded(this: any, row: unknown, col: unknown, ...rest: unknown[]): unknown {
-      grow(this, row, col)
-      return original.call(this, row, col, ...rest)
-    }
-  }
-
-  const originalSetArray = prototype.setArray
-  if (typeof originalSetArray === 'function') {
-    prototype.setArray = function guardedSetArray(this: any, row: unknown, col: unknown, values: unknown, ...rest: unknown[]): unknown {
-      const height = Array.isArray(values) ? values.length : 0
-      const width = Array.isArray(values) && Array.isArray(values[0]) ? (values[0] as unknown[]).length : 1
-      if (height > 0 && width > 0) {
-        grow(this, (typeof row === 'number' ? row : 0) + height - 1, (typeof col === 'number' ? col : 0) + width - 1)
-      }
-      return originalSetArray.call(this, row, col, values, ...rest)
-    }
-  }
-
-  const originalName = prototype.name
-  if (typeof originalName === 'function') {
-    // `name()` is a getter and `name(value)` the setter, told apart by the
-    // argument COUNT — so forward the real arguments verbatim. Calling
-    // `original.call(this, undefined)` would look like a set-to-undefined and
-    // the engine rejects it with "Not supported exception".
-    prototype.name = function guardedName(this: any, ...args: unknown[]): unknown {
-      if (args.length > 0) assertUsableSheetName(args[0])
-      return originalName.apply(this, args)
-    }
-  }
-}
-
-/**
- * Next row/column count to resize to: enough for the requested index, then
- * rounded up to a doubling-or-step boundary so a loop that fills N rows
- * resizes O(log N) times instead of once per row.
- */
-/** Which of the three batch suspends this workbook accepted. */
-interface BatchState {
-  readonly paint: boolean
-  readonly events: boolean
-  readonly calc: boolean
-}
-
-function nextExtent(current: number, requested: number, ceiling: number, step: number): number {
-  return Math.min(ceiling, Math.max(requested + 1, current * 2, current + step))
-}
-
-/** Reject sheet names Excel itself refuses, with a message that says why. */
-function assertUsableSheetName(value: unknown): void {
-  if (typeof value !== 'string') {
-    throw new SjsWorkerError(`sheet name must be a string, got ${typeof value}`, 'SJS_SHEET_NAME_INVALID')
-  }
-  const illegal = [...new Set([...value].filter((character) => ':\\/?*[]'.includes(character)))]
-  if (illegal.length > 0) {
-    throw new SjsWorkerError(
-      `sheet name ${JSON.stringify(value)} contains character(s) Excel does not allow in a sheet name: ${illegal.join(' ')} (also avoid : \\ / ? * [ ])`,
-      'SJS_SHEET_NAME_INVALID',
-    )
-  }
-  if (value.length === 0) {
-    throw new SjsWorkerError('sheet name must not be empty', 'SJS_SHEET_NAME_INVALID')
-  }
-  if (value.length > 31) {
-    throw new SjsWorkerError(
-      `sheet name ${JSON.stringify(value)} is ${String(value.length)} characters; Excel allows at most 31`,
-      'SJS_SHEET_NAME_INVALID',
-    )
-  }
-  if (value.startsWith("'") || value.endsWith("'")) {
-    throw new SjsWorkerError(
-      `sheet name ${JSON.stringify(value)} must not start or end with an apostrophe`,
-      'SJS_SHEET_NAME_INVALID',
-    )
-  }
-}
-
-async function runUserCode(code: string, spread: Workbook, GC: Gc, workspaceRoot: string): Promise<unknown> {
-  installWorksheetGuards(GC)
-  const sheet = (name?: string): unknown => {
-    // Resolve by scanning indices: headless SpreadJS does not register the
-    // by-name dictionary on fromJSON, so getSheet(name) returns undefined even
-    // for sheets that exist. getActiveSheet() is reliable.
-    if (name === undefined || name.length === 0) {
-      const active = spread.getActiveSheet()
-      if (active !== undefined && active !== null) return active
-      throw new SjsWorkerError('workbook has no active sheet', 'SJS_SHEET_NOT_FOUND')
-    }
-    for (let i = 0; i < spread.getSheetCount(); i++) {
-      const candidate = spread.getSheet(i)
-      if (candidate !== undefined && candidate !== null && typeof candidate.name === 'function' && candidate.name() === name) {
-        return candidate
-      }
-    }
-    throw new SjsWorkerError(`sheet not found: ${JSON.stringify(name)}`, 'SJS_SHEET_NOT_FOUND')
-  }
-  const context = createContext({
-    spread,
-    workbook: spread,
-    GC,
-    sheet,
-    io: makeIo(workspaceRoot),
-    console: makeConsole(),
-    snapshot: () => summarizeSpread(spread, GC),
-    // A vm context is its own realm with its own intrinsics, and SpreadJS decides
-    // whether a cell value is a date with `instanceof Date` in THIS realm. A Date
-    // built from the sandbox's realm fails that check, so the engine treats it as
-    // a plain number and the cell ends up showing 1899/12/30 — a silently wrong
-    // date rather than an error. Handing the sandbox this realm's Date makes
-    // `new Date(...)` produce a value the engine recognises.
-    Date,
-  })
-  const source = `(async () => {\n${code}\n})()`
-  const suspended = beginBatch(spread)
-  try {
-    let promise: unknown
-    try {
-      promise = runInContext(source, context)
-    } catch (error) {
-      throw new SjsWorkerError(`syntax error: ${errorMessage(error)}`, 'SJS_SCRIPT_ERROR')
-    }
-    return isPromiseLike(promise) ? await promise : promise
-  } finally {
-    endBatch(spread, suspended)
-  }
-}
-
-/**
- * Put the workbook in batch mode for the duration of a script. Repainting the
- * grid, dispatching change events and recalculating dependents after every write
- * costs real time on a fill: a 20k-row script with formulas measured 3412ms
- * unbatched, 1808ms with paint+events suspended, and 959ms with calculation
- * suspended too — a 3.6x spread. The batch is undone before the workbook is
- * persisted, so the stored file always carries fully calculated values.
- *
- * Consequence to know about: while calculation is suspended, reading a formula's
- * value returns `null`. That matches how bulk work is actually written — fill
- * first, read afterwards — but a script that wants to verify mid-flight must
- * `spread.resumeCalcService()` before it reads (one recalculation, cheap).
- */
-function beginBatch(spread: Workbook): BatchState {
-  const workbook = spread as unknown as Record<string, unknown>
-  const can = (method: string): boolean => typeof workbook[method] === 'function'
-  const state = { paint: can('suspendPaint'), events: can('suspendEvent'), calc: can('suspendCalcService') }
-  try {
-    if (state.paint) (workbook.suspendPaint as () => void).call(spread)
-    if (state.events) (workbook.suspendEvent as () => void).call(spread)
-    if (state.calc) (workbook.suspendCalcService as () => void).call(spread)
-  } catch {
-    // A workbook that refuses batching still runs; it is only slower.
-  }
-  return state
-}
-
-/** Undo {@link beginBatch}, resuming in the reverse order of the suspends. */
-function endBatch(spread: Workbook, suspended: BatchState): void {
-  const workbook = spread as unknown as Record<string, unknown>
-  try {
-    if (suspended.calc) (workbook.resumeCalcService as () => void).call(spread)
-    if (suspended.events) (workbook.resumeEvent as () => void).call(spread)
-    if (suspended.paint) (workbook.resumePaint as () => void).call(spread)
-  } catch {
-    // Resuming is best-effort inside a one-shot process that exits next.
-  }
-}
-
-/** Materialize the code's return value or, when omitted, the workbook summary. */
-async function materializeResult(returned: unknown, spread: Workbook, GC: Gc): Promise<unknown> {
-  if (returned === undefined) return summarizeSpread(spread, GC)
-  const json = serializeSafe(returned)
-  const text = JSON.stringify(json)
-  if (text.length > 200_000) {
-    throw new SjsWorkerError(
-      'script returned more than 200_000 characters; return a compact summary or call snapshot()',
-      'SJS_RESULT_TOO_LARGE',
-    )
-  }
-  return json
-}
-
-/**
- * Model-readable workbook summary (sheet metadata + used ranges). The no-arg
- * getUsedRange() returns null in this headless environment — the enum value must
- * be passed explicitly.
- */
-export function summarizeSpread(spread: Workbook, GC: Gc): Record<string, unknown> {
-  const sheets: unknown[] = []
-  for (let i = 0; i < spread.getSheetCount(); i++) {
-    const s = spread.getSheet(i)
-    if (s === null || s === undefined) continue
-    let used: unknown
-    try {
-      // Content bound (data + formula), matching what export/CSV treats as the
-      // used extent — `all` reports colCount -1 after xlsx round-trips.
-      const type = GC.Spread.Sheets.UsedRangeType
-      const range = s.getUsedRange(type.data | type.formula)
-      used = range !== null && range !== undefined && typeof range === 'object' &&
-        typeof range.row === 'number' && typeof range.rowCount === 'number' &&
-        typeof range.col === 'number' && typeof range.colCount === 'number'
-        ? { row: range.row, rowCount: range.rowCount, col: range.col, colCount: range.colCount }
-        : undefined
-    } catch {
-      used = undefined
-    }
-    sheets.push({
-      name: s.name(),
-      rowCount: s.getRowCount(),
-      columnCount: s.getColumnCount(),
-      ...used === undefined ? {} : { usedRange: used },
-    })
-  }
-  return { sheets, activeSheet: spread.getActiveSheet()?.name() }
-}
-
-/** Sandboxed io helper bound to one authorized workspace root. */
-function makeIo(workspaceRoot: string) {
-  const authorize = (requested: string): string => {
-    const candidate = isAbsolute(requested) ? resolve(requested) : resolve(workspaceRoot, requested)
-    const fromRoot = relative(workspaceRoot, candidate)
-    if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
-      throw new SjsWorkerError('file path is outside the session workspace', 'SJS_FILE_PERMISSION_DENIED')
-    }
-    return candidate
-  }
-  return {
-    async readText(path: string): Promise<string> {
-      // Authorization runs first so a workspace escape reports
-      // SJS_FILE_PERMISSION_DENIED, not a generic read failure.
-      const target = authorize(path)
-      try {
-        return await readFile(target, 'utf8')
-      } catch (error) {
-        throw new SjsWorkerError(`cannot read ${path}: ${errorMessage(error)}`, 'SJS_FILE_READ_FAILED')
-      }
-    },
-    async writeText(path: string, text: string): Promise<void> {
-      const target = authorize(path)
-      try {
-        await mkdir(dirname(target), { recursive: true })
-        await writeFile(target, text, 'utf8')
-      } catch (error) {
-        throw new SjsWorkerError(`cannot write ${path}: ${errorMessage(error)}`, 'SJS_FILE_WRITE_FAILED')
-      }
-    },
-    async readBytes(path: string): Promise<unknown> {
-      const target = authorize(path)
-      try {
-        const buffer = await readFile(target)
-        return Array.from(buffer)
-      } catch (error) {
-        throw new SjsWorkerError(`cannot read ${path}: ${errorMessage(error)}`, 'SJS_FILE_READ_FAILED')
-      }
-    },
-  }
-}
-
-/** Console that keeps worker stdout clean (diagnostics go to stderr). */
-function makeConsole(): Record<string, (message?: unknown, ...args: unknown[]) => void> {
-  const write = (messages: readonly unknown[]): void => {
-    process.stderr.write(`${messages.map((m) => format(m)).join(' ')}\n`)
-  }
-  return {
-    log: (message, ...rest) => write([message, ...rest]),
-    info: (message, ...rest) => write([message, ...rest]),
-    warn: (message, ...rest) => write([message, ...rest]),
-    error: (message, ...rest) => write([message, ...rest]),
-  }
-}
-
-function format(value: unknown): string {
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value) ?? String(value)
-  } catch {
-    return String(value)
-  }
-}
-
-function serializeSafe(value: unknown): unknown {
-  try {
-    return JSON.parse(JSON.stringify(value))
-  } catch {
-    throw new SjsWorkerError(
-      'value is not JSON-serializable (cyclic or non-plain object); return plain data such as arrays of numbers/strings',
-      'SJS_NON_SERIALIZABLE_RESULT',
-    )
-  }
-}
-
-function destroySpread(spread: Workbook): void {
-  try {
-    spread.destroy()
-  } catch {
-    // Destroy is best-effort inside a one-shot process.
-  }
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return typeof value === 'object' && value !== null && 'then' in value && typeof (value as { then: unknown }).then === 'function'
 }

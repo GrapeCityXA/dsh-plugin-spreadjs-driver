@@ -1,0 +1,409 @@
+/**
+ * The engine runtime: SpreadJS loaded in a REAL system browser, driven from Node
+ * over CDP.
+ *
+ * Why bother, when jsdom worked: "run SpreadJS under Node" is a claim we do not
+ * want to have to defend, and it cost us three separate defect classes that only
+ * exist because jsdom is not a browser — cross-realm ArrayBuffer, a cross-realm
+ * Date that silently wrote 1899/12/30 into cells, and a missing
+ * CanvasRenderingContext2D that broke every sheet carrying a number formatter.
+ * In a real browser those classes do not exist, and the pixels are the engine's
+ * own.
+ *
+ * The process model is deliberately unchanged from the jsdom worker: ONE request
+ * in, ONE envelope out, then the process exits and takes the browser with it.
+ * That keeps `sjs_execute`'s isolation story ("a hostile script dies with its
+ * process") exactly as it was. A persistent browser is a later stage; this one
+ * only replaces what is inside the worker.
+ *
+ * Division of labour:
+ *   Node  — path authorization, every byte of file IO, the browser process, CDP,
+ *           error classification, atomic writes.
+ *   page  — SpreadJS only. It has no filesystem and never sees a host path it was
+ *           not handed already-authorized.
+ */
+import { createRequire } from 'node:module'
+import { existsSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { basename, dirname, join, resolve } from 'node:path'
+import { CDP, Page, launchBrowser, type LaunchedBrowser } from './cdp.ts'
+import { findBrowser } from './discovery.ts'
+import { startFileServer, type FileServer } from './server.ts'
+import { SjsWorkerError } from '../errors.ts'
+import { basenameWithoutExtension, errorMessage } from '../util.ts'
+import { discoverPdfFonts, type PdfFontFile } from '../fonts.ts'
+import PAGE_SOURCE from './page.embed.js'
+
+const require = createRequire(import.meta.url)
+
+/**
+ * The UMD build each package ships, in load order.
+ *
+ * Order is a real dependency chain, not taste: print must precede pdf, shapes
+ * must precede slicers (and pivot slicers additionally need the pivot add-on).
+ * Every file is verified to exist at boot, so a packaging change fails with a
+ * named error instead of a silent `GC is undefined` in the page.
+ */
+const BUNDLES: readonly (readonly [packageName: string, file: string])[] = [
+  ['spread-sheets', 'dist/gc.spread.sheets.all.min.js'],
+  ['spread-sheets-io', 'dist/gc.spread.sheets.io.min.js'],
+  ['spread-sheets-shapes', 'dist/gc.spread.sheets.shapes.min.js'],
+  ['spread-sheets-charts', 'dist/gc.spread.sheets.charts.min.js'],
+  ['spread-sheets-slicers', 'dist/gc.spread.sheets.slicers.min.js'],
+  ['spread-sheets-print', 'dist/gc.spread.sheets.print.min.js'],
+  ['spread-sheets-pdf', 'dist/gc.spread.sheets.pdf.min.js'],
+  ['spread-sheets-pivot-addon', 'dist/gc.spread.pivot.pivottables.min.js'],
+  ['spread-sheets-datacharts-addon', 'dist/gc.spread.sheets.datacharts.min.js'],
+]
+
+/** The page document. The host is the box the engine measures and renders into. */
+const APP_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>sjs-runtime</title>
+<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}#host{width:1400px;height:900px}</style>
+</head><body><div id="host"></div><script src="/runtime.js"></script></body></html>`
+
+/** Geometry constants shared with the page (see page.embed.js). */
+const HOST_WIDTH = 1400
+const HOST_HEIGHT = 900
+const MAX_SHOT_WIDTH = 2600
+const MAX_SHOT_HEIGHT = 2200
+/** Canvas is host client size minus one scrollbar (18px) on each axis. */
+const SCROLLBAR = 18
+/** Comfort padding so the last column/row is not flush against the edge. */
+const CONTENT_PAD = 8
+/** Empty-sheet fallback viewport (canvas ≈ 900×400). */
+const EMPTY_WIDTH = 918
+const EMPTY_HEIGHT = 418
+
+export interface RuntimeOptions {
+  /** Browser executable from the host config; discovery runs when omitted. */
+  readonly browserPath?: string
+  /** stderr sink for diagnostics (stdout carries the envelope and nothing else). */
+  readonly log?: (message: string) => void
+}
+
+/** Structural workbook summary, mirroring the jsdom worker's `status`. */
+export interface WorkbookSummary {
+  sheets: { name: string; rowCount: number; columnCount: number; usedRange?: { row: number; rowCount: number; col: number; colCount: number } }[]
+  activeSheet?: string
+}
+
+export interface PdfExportResult {
+  bytes: number
+  fonts: string[]
+}
+
+export interface PngShotResult {
+  bytes: number
+  width: number
+  height: number
+  clipped?: boolean
+  sheet: string
+  used: { row: number; rowCount: number; col: number; colCount: number } | null
+  font: string
+}
+
+export interface BrowserRuntime {
+  /** Blank workbook → .ssjson. */
+  create(targetPath: string): Promise<{ bytes: number } & WorkbookSummary>
+  /** Load an .ssjson file (validates it) and report its structure. */
+  load(sourcePath: string): Promise<WorkbookSummary>
+  /** Persist the workbook currently in the page to a target path, atomically. */
+  saveAs(targetPath: string): Promise<{ bytes: number }>
+  /** Import xlsx/csv bytes into a workbook and persist it as .ssjson. */
+  importInto(sourcePath: string, targetPath: string, format: 'excel' | 'csv'): Promise<{ bytes: number } & WorkbookSummary>
+  /** Export the loaded workbook; Node writes the bytes atomically. */
+  exportWorkbook(sourcePath: string, outputPath: string, format: 'xlsx' | 'csv'): Promise<Record<string, unknown>>
+  /** Export to PDF with fonts registered first (the hollow-PDF guard). */
+  exportPdf(sourcePath: string, outputPath: string): Promise<PdfExportResult>
+  /** Rasterize the active sheet through the browser's own canvas. */
+  screenshotPng(sourcePath: string, outputPath: string): Promise<PngShotResult>
+  /** PDF snapshot of the active sheet (same font guard as exportPdf). */
+  screenshotPdf(sourcePath: string, outputPath: string): Promise<PdfExportResult>
+  /** Load, run user code, persist, then materialize the return value. */
+  execute(sourcePath: string, workspaceRoot: string, code: string): Promise<unknown>
+  close(): Promise<void>
+}
+
+/** Resolve every bundle to an absolute path, failing loudly when one is missing. */
+function bundleFiles(): Record<string, string> {
+  const files: Record<string, string> = {}
+  for (const [packageName, relative] of BUNDLES) {
+    let packageJson: string
+    try {
+      packageJson = require.resolve(`@grapecity-software/${packageName}/package.json`)
+    } catch (error) {
+      throw new SjsWorkerError(
+        `cannot resolve @grapecity-software/${packageName} (${errorMessage(error)}); the plugin's dependencies are not installed`,
+        'SJS_BROWSER_FAILED',
+      )
+    }
+    const file = join(dirname(packageJson), relative)
+    if (!existsSync(file)) {
+      throw new SjsWorkerError(
+        `the SpreadJS browser build is missing: ${file}. Expected ${packageName}@19.1.4 to ship ${basename(relative)}.`,
+        'SJS_BROWSER_FAILED',
+      )
+    }
+    files[`/${packageName}/${basename(relative)}`] = file
+  }
+  return files
+}
+
+/** Boot the whole runtime: server, browser, page, bundles. */
+export async function loadRuntime(options: RuntimeOptions = {}): Promise<BrowserRuntime> {
+  const log = options.log ?? ((): void => undefined)
+  const startedAt = performance.now()
+  const bundleMap = bundleFiles()
+
+  // The host-route capability (see server.ts): generated per process, never
+  // placed in a page global, inlined only into the calls Node itself builds.
+  const capability = randomBytes(16).toString('hex')
+
+  let server: FileServer | undefined
+  let browser: LaunchedBrowser | undefined
+  let cdp: CDP | undefined
+  try {
+    server = await startFileServer(
+      {
+        documents: { '/': APP_HTML, '/index.html': APP_HTML, '/runtime.js': `window.__BUNDLES = ${JSON.stringify(Object.keys(bundleMap))};\n${PAGE_SOURCE}` },
+        files: bundleMap,
+      },
+      capability,
+    )
+
+    const browserPath = options.browserPath ?? process.env['SJS_BROWSER_PATH']
+    const located = findBrowser(browserPath)
+    log(`[sjs] browser: ${located.kind} at ${located.path}`)
+
+    browser = await launchBrowser({ exe: located.path, headless: true, log })
+    cdp = await CDP.connect(browser.wsUrl)
+    const page = await cdp.newPage('about:blank')
+    await page.send('Page.enable')
+    await page.send('Runtime.enable')
+    // deviceScaleFactor 1 keeps canvas backing-store pixels == CSS pixels, which
+    // is what makes the reported screenshot width comparable with the model's own
+    // column arithmetic.
+    await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: 1, mobile: false })
+
+    forwardPageDiagnostics(page, log)
+    const bootMs = performance.now() - startedAt
+    const injected = await bootPage(page, server.origin, log)
+    log(`[sjs] page ready in ${bootMs.toFixed(0)}ms (${String(injected.bundles)} bundles loaded)`)
+
+    const origin = server.origin
+    /** Host-authorized URL: the capability is inlined HERE, per call. */
+    const hostUrl = (absolutePath: string): string =>
+      `${origin}/fs?p=${encodeURIComponent(resolve(absolutePath))}&k=${capability}`
+
+    const read = async <T,>(sourcePath: string, width = HOST_WIDTH, height = HOST_HEIGHT): Promise<{ bytes: number } & T> => {
+      const loaded = await callPage<{ bytes: number }>(
+        page,
+        `__H.loadWorkbook(${JSON.stringify(hostUrl(sourcePath))}, ${String(width)}, ${String(height)})`,
+        'SJS_FILE_READ_FAILED',
+      )
+      return loaded as { bytes: number } & T
+    }
+
+    const share = (summary: WorkbookSummary): WorkbookSummary => ({ sheets: summary.sheets, activeSheet: summary.activeSheet })
+
+    const runtime: BrowserRuntime = {
+      async create(targetPath) {
+        const created = await callPage<{ bytes: number }>(
+          page,
+          `__H.createWorkbook(${JSON.stringify(hostUrl(targetPath))}, ${String(HOST_WIDTH)}, ${String(HOST_HEIGHT)})`,
+        )
+        return { bytes: created.bytes, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+      },
+
+      async load(sourcePath) {
+        await read(sourcePath)
+        return share(await callPage<WorkbookSummary>(page, '__H.summarize()'))
+      },
+
+      async saveAs(targetPath) {
+        return await callPage<{ bytes: number }>(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`)
+      },
+
+      async importInto(sourcePath, targetPath, format) {
+        const imported = await callPage<{ bytes: number }>(
+          page,
+          `__H.importFile(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(resolve(sourcePath))}, ${JSON.stringify(format)})`,
+          'SJS_IMPORT_FAILED',
+        )
+        await callPage(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`)
+        return { bytes: imported.bytes, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+      },
+
+      async exportWorkbook(sourcePath, outputPath, format) {
+        await read(sourcePath)
+        const exported = await callPage<{ bytes: number; sheet?: string; usedRange?: unknown }>(
+          page,
+          `__H.exportFile(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(format)})`,
+          'SJS_EXPORT_FAILED',
+        )
+        const result: Record<string, unknown> = {
+          format,
+          file: outputPath,
+          bytes: exported.bytes,
+          ...(exported.sheet === undefined ? {} : { sheet: exported.sheet }),
+          ...(exported.usedRange === undefined ? {} : { usedRange: exported.usedRange }),
+        }
+        if (format === 'csv') return result
+        return { ...result, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+      },
+
+      async exportPdf(sourcePath, outputPath) {
+        await read(sourcePath)
+        return await callPage<PdfExportResult>(
+          page,
+          `__H.exportPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
+          'SJS_PDF_EXPORT_FAILED',
+        )
+      },
+
+      async screenshotPdf(sourcePath, outputPath) {
+        await read(sourcePath)
+        return await callPage<PdfExportResult>(
+          page,
+          `__H.screenshotPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
+          'SJS_PDF_EXPORT_FAILED',
+        )
+      },
+
+      async screenshotPng(sourcePath, outputPath) {
+        const shot = await callPage<PngShotResult>(
+          page,
+          `__H.screenshotPng(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(hostUrl(outputPath))}, ` +
+            `${String(MAX_SHOT_WIDTH)}, ${String(MAX_SHOT_HEIGHT)}, ${String(CONTENT_PAD)}, ${String(SCROLLBAR)}, ${String(EMPTY_WIDTH)}, ${String(EMPTY_HEIGHT)})`,
+          'SJS_FILE_READ_FAILED',
+        )
+        return shot
+      },
+
+      async execute(sourcePath, workspaceRoot, code) {
+        // The workspace root is set BEFORE any user code runs, and the confinement
+        // decision stays on this side of the boundary (server.authorizeWorkspacePath).
+        server?.setWorkspaceRoot(resolve(workspaceRoot))
+        await read(sourcePath)
+        const outcome = await callPage<{ json: string }>(
+          page,
+          `__H.runCode(${JSON.stringify(code)}, ${JSON.stringify(hostUrl(sourcePath))})`,
+          'SJS_SCRIPT_ERROR',
+        )
+        return JSON.parse(outcome.json) as unknown
+      },
+
+      async close() {
+        await browser?.close()
+        await server?.close()
+      },
+    }
+    return runtime
+  } catch (error) {
+    // Never leak a half-started browser or server: the one-shot process is about
+    // to exit, and an orphaned browser profile dir would outlive it.
+    await cdp?.send('Browser.close').catch(() => undefined)
+    cdp?.dispose()
+    await browser?.close().catch(() => undefined)
+    await server?.close().catch(() => undefined)
+    if (error instanceof SjsWorkerError) throw error
+    const code = (error as { code?: string }).code ?? 'SJS_BROWSER_FAILED'
+    throw new SjsWorkerError(`cannot start the SpreadJS browser runtime: ${errorMessage(error)}`, code)
+  }
+}
+
+/**
+ * Fonts to register for PDF export, as URLs the PAGE fetches.
+ *
+ * Discovery and the empty-set guard stay Node-side (see fonts.ts): `savePDF`
+ * embeds only registered fonts, and an unregistered CJK cell silently produces a
+ * hollow PDF, so this list must never be empty.
+ */
+function pdfFontRequests(hostUrl: (path: string) => string): { family: string; url: string; fallback?: boolean }[] {
+  const fonts: readonly PdfFontFile[] = discoverPdfFonts()
+  if (fonts.length === 0) {
+    throw new SjsWorkerError(
+      '找不到可嵌入 PDF 的字体：需要至少一个 .ttf/.otf（不支持 .ttc）。' +
+        '可用环境变量 GC_SJS_PDF_FONT_DIRS 指向含 simhei.ttf / arial.ttf 等的目录，避免导出空壳 PDF。',
+      'SJS_PDF_FONT_UNAVAILABLE',
+    )
+  }
+  // fallback 命中含中文的字体优先；否则退到首个已注册字体（与 jsdom 版一致）。
+  const fallback = fonts.find((font) => font.cjk) ?? fonts[0]
+  return fonts.map((font) => ({
+    family: font.family,
+    url: hostUrl(font.file),
+    ...(fallback !== undefined && font.file === fallback.file ? { fallback: true } : {}),
+  }))
+}
+
+/**
+ * Navigate and load the bundles, retrying the whole navigation when it fails.
+ *
+ * A headless browser occasionally commits the target before its subresource
+ * pipeline is ready, and the bundle `<script>` tags then fail with a network
+ * error even though the origin is up. Re-navigating is the fix (the same lesson
+ * the spike's harness learned); giving up would fail an operation for a timing
+ * accident.
+ */
+async function bootPage(page: Page, origin: string, log: (message: string) => void): Promise<{ bundles: number }> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await page.goto(`${origin}/`)
+      return await callPage<{ bundles: number }>(page, '__H.boot()')
+    } catch (error) {
+      lastError = error
+      log(`[sjs] page boot attempt ${String(attempt)} failed: ${errorMessage(error)}`)
+      await new Promise((resolve) => { setTimeout(resolve, 400) })
+    }
+  }
+  throw new SjsWorkerError(`cannot load SpreadJS into the browser page: ${errorMessage(lastError)}`, 'SJS_BROWSER_FAILED')
+}
+
+/**
+ * Call one page helper and classify its failure.
+ *
+ * The page signals a specific worker error code by throwing a value carrying
+ * `sjsCode`; anything else is a runtime failure of the browser side.
+ */
+async function callPage<T>(page: Page, expression: string, fallbackCode = 'SJS_WORKER_FAILED'): Promise<T> {
+  const wrapped =
+    `(async () => { try { return { ok: true, value: await (${expression}) } }` +
+    ' catch (error) { return { ok: false, code: (error && error.sjsCode) || "", message: (error && error.message) || String(error) } } })()'
+  let raw: unknown
+  try {
+    raw = await page.evaluate(wrapped)
+  } catch (error) {
+    throw new SjsWorkerError(`browser page failed: ${errorMessage(error)}`, 'SJS_BROWSER_FAILED')
+  }
+  const outcome = raw as { ok?: boolean; value?: unknown; code?: string; message?: string } | undefined
+  if (outcome === undefined || outcome.ok !== true) {
+    throw new SjsWorkerError(outcome?.message ?? 'browser page returned no result', outcome?.code !== undefined && outcome.code.length > 0 ? outcome.code : fallbackCode)
+  }
+  return outcome.value as T
+}
+
+/**
+ * Forward page console output and uncaught errors to stderr.
+ *
+ * This is what keeps `console.log` inside `sjs_execute` code visible at all, and
+ * it is the only channel: stdout carries the envelope and must stay clean.
+ */
+function forwardPageDiagnostics(page: Page, log: (message: string) => void): void {
+  page.on('Runtime.consoleAPICalled', (params) => {
+    const event = params as { type?: string; args?: { value?: unknown; description?: string; preview?: unknown }[] }
+    const text = (event.args ?? [])
+      .map((argument) => {
+        if (argument.value !== undefined) return typeof argument.value === 'string' ? argument.value : JSON.stringify(argument.value)
+        if (argument.description !== undefined) return argument.description
+        return '[object]'
+      })
+      .join(' ')
+    if (text.length > 0) log(text)
+  })
+  page.on('Runtime.exceptionThrown', (params) => {
+    const event = params as { exceptionDetails?: { exception?: { description?: string }; text?: string } }
+    log(`[sjs:page] ${event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text ?? 'uncaught page error'}`)
+  })
+}

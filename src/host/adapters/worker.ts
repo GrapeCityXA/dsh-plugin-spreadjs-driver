@@ -12,15 +12,18 @@ import { SjsError } from '../service/errors.ts'
  */
 export class SjsWorker {
   private readonly timeoutMs: number
-  constructor(timeoutMs: number) {
+  /** Explicit browser executable for the engine; discovery runs when omitted. */
+  private readonly browserPath: string | undefined
+  constructor(timeoutMs: number, browserPath?: string) {
     this.timeoutMs = timeoutMs
+    this.browserPath = browserPath
   }
 
   /** Run one request and return its JSON result. */
   async run(request: SjsWorkerRequest, signal?: AbortSignal): Promise<JsonValue> {
     signal?.throwIfAborted()
     const child = spawn(process.execPath, [SJS_WORKER_ENTRY], {
-      env: sjsWorkerEnvironment(),
+      env: sjsWorkerEnvironment(this.browserPath),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -78,13 +81,20 @@ function workerDiagnostic(stderr: readonly Buffer[], fallback: string): string {
   return `${fallback} ${diagnostic.length <= limit ? diagnostic : `${diagnostic.slice(0, limit)}…`}`
 }
 
-function sjsWorkerEnvironment(): NodeJS.ProcessEnv {
-  const env = Object.fromEntries(['HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR'].flatMap((key) => {
+function sjsWorkerEnvironment(browserPath?: string): NodeJS.ProcessEnv {
+  // TEMP/TMP/USERPROFILE are here for the BROWSER, not for us: the engine now
+  // runs in a real Edge/Chrome process, which needs a writable temp directory
+  // for its throwaway profile (and USERPROFILE as the fallback root for it).
+  // With those stripped, `os.tmpdir()` degrades to `SystemRoot\temp` and then to
+  // the RELATIVE path `undefined\temp`.
+  const env = Object.fromEntries(['HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE'].flatMap((key) => {
     const value = process.env[key]
     return value === undefined ? [] : [[key, value]]
   }))
-  // The worker resolves its heavy dependencies (@grapecity-software/*, jsdom,
-  // canvas) through this plugin's node_modules (pnpm isolates them there).
+  // The worker resolves its heavy dependencies (@grapecity-software/*, and the
+  // browser executable it is told about) through this plugin's node_modules
+  // (pnpm isolates them there).
   env.NODE_PATH = [PLUGIN_NODE_MODULES, process.env.NODE_PATH].filter((value): value is string => value !== undefined && value.length > 0).join(delimiter)
+  if (browserPath !== undefined && browserPath.length > 0) env.SJS_BROWSER_PATH = browserPath
   return env
 }

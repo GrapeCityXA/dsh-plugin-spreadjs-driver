@@ -174,7 +174,7 @@ export class SjsProvider extends SjsService {
   }
 
   private async request(request: SjsWorkerRequest, signal?: AbortSignal) {
-    return new SjsWorker(this.config.operationTimeoutMs).run(request, signal)
+    return new SjsWorker(this.config.operationTimeoutMs, this.config.browserPath).run(request, signal)
   }
 
   /** Dispose anything the provider owns (none today; workers are one-shot). */

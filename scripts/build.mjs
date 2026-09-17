@@ -45,6 +45,11 @@ const worker = {
   external: peers,
   sourcemap: false,
   logLevel: 'info',
+  // The browser half of the runtime ships as page script SOURCE, embedded into
+  // the worker bundle as a string and served to the page over loopback HTTP. It
+  // cannot be a normal module: it has to arrive at the page as a plain script
+  // (see the note at the top of page.embed.js).
+  loader: { '.embed.js': 'text' },
 }
 
 // The browser half is loaded by the DSH client-modules system, which expects a

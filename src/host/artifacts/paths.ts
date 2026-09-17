@@ -11,6 +11,6 @@ export const SJS_WORKER_ENTRY = fileURLToPath(new URL('../artifacts/sjs-worker.m
 /**
  * This plugin's node_modules root — the NODE_PATH given to spawned worker
  * processes. The worker resolves its heavy runtime dependencies
- * (@grapecity-software/*, jsdom, canvas) through here.
+ * (@grapecity-software/*, whose UMD builds it serves to the browser) through here.
  */
 export const PLUGIN_NODE_MODULES = fileURLToPath(new URL('../node_modules/', import.meta.url))

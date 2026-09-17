@@ -3,17 +3,17 @@
  *
  * Contract: the host spawns this process, writes exactly ONE JSON request on
  * stdin and ends the stream. The worker reads stdin to EOF, dispatches the
- * operation (booting the headless SpreadJS environment lazily on first use),
- * then writes exactly ONE JSON envelope line on stdout and exits.
+ * operation (starting the browser runtime lazily on first use), then writes
+ * exactly ONE JSON envelope line on stdout and exits.
  *
- * stdout is reserved for the envelope; all diagnostics go to stderr
- * (`console.warn` in headless.ts, sandboxed `console` in execute code).
+ * stdout is reserved for the envelope; all diagnostics go to stderr (the page's
+ * console output and uncaught errors are forwarded there too).
  */
 import { writeSync } from 'node:fs'
 import type { SjsWorkerRequest } from '../../shared/protocol.ts'
 import { parseSjsWorkerRequest } from '../../shared/request.ts'
 import { SjsWorkerError } from './errors.ts'
-import { runOperation } from './operations.ts'
+import { closeRuntime, runOperation } from './operations.ts'
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = []
@@ -37,7 +37,15 @@ async function main(): Promise<void> {
       'SJS_BAD_REQUEST',
     )
   }
-  const result = await runOperation(request)
+  let result: Awaited<ReturnType<typeof runOperation>>
+  try {
+    result = await runOperation(request)
+  } finally {
+    // The browser and the file server must never outlive this process — on the
+    // failure path too, or a timed-out operation would leave a browser running
+    // with its profile directory behind it.
+    await closeRuntime()
+  }
   flushAndExit(JSON.stringify({ ok: true, result }) + '\n', 0)
 }
 
@@ -49,8 +57,8 @@ main().catch((error: unknown) => {
 
 /**
  * Write the envelope synchronously to stdout and exit. A plain `process.exitCode`
- * would leave the process alive — jsdom's pretendToBeVisual keeps a rAF timer
- * running and the host would only reclaim us through its timeout kill.
+ * would leave the process alive: the browser is a child process and, with a live
+ * CDP socket open, Node would only reclaim us through the host's timeout kill.
  */
 function flushAndExit(line: string, exitCode: number): void {
   try {
