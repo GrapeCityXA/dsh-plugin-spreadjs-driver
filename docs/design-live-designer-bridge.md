@@ -199,17 +199,45 @@ export function apply(ctx: ClientContext): void {
 
 ---
 
-## 5. 通道选型（host → 浏览器）
+## 5. 通道选型（host → 浏览器）—— 已定并已实现
 
 **约束**：agent 在 host 进程，"把指令送到浏览器"无法避免；**但对象永不参与**。
 
-| 方案 | 机制 | 评价 |
-|---|---|---|
-| **A · 第一方 RPC 长轮询（推荐）** | 客户端循环调用 host 暴露的 `@Remote` 方法 `claim()`；host 侧把调用**挂住**直到有指令（长轮询，非忙轮询）或超时；执行完调 `complete(id, result)` | 全程第一方（`@Remote` 即 DSH 的 client→host 通道，传输是既有 WebSocket，支持 `AbortSignal` 取消） |
-| B · host 推送事件 | 客户端 `$on` 接收 forwarded Host events | 更优雅，但需确认按需推送的确切 API |
-| C · `webServer` 路由承载指令 | 客户端 fetch 一个路由领取指令 | 生态里有先例（编辑器自己的 `/spreadjs/api/config`），但**是 HTTP** |
+**结论：`connection.rpc` 上的 `/spreadjs-live` 通道，浏览器侧轮询领活。**
+零 codegen、零新依赖、零新增服务端路由。
 
-> **待确认**：`@Remote` 的严格生成贡献（"only strict generated contributions can mount on the Client face"）具体要求什么构建步骤；若成本过高，退到 B 或 C。
+### 三个候选的核实结论
+
+| 方案 | 结论 | 依据 |
+|---|---|---|
+| B · forwarded events | ❌ **不可能** | 允许清单是硬编码常量（`dsh-api-remotes/lib/index.js:17` 的 `API_REMOTE_FORWARDED_EVENTS`），且 `registerRemoteEvents` 一次性注册、重复即抛错（`dsh-api-gateway/lib/index.js:485`）。第三方插件无法添加自己的事件。审批（`dsh-user-approval` → `dsh-client-ui-approval` 的 `$on("approval/request")`）走的正是这条路，但那是第一方特权。 |
+| A · `@Remote` | ❌ **方向不对，成本也过高** | 它是**客户端→主机单向**（`dsh-typert-protocol/README.md`）。而且生成器 `dsh-typert-generator` 根本没随包发布——24 个用它的包全是第一方，**无第三方先例**；descriptor 还要求 strict codec（`dsh-api-gateway/lib/client.js:1807`）。 |
+| C · `connection.rpc` | ✅ **采用** | 主机 `handle(channel, handler)`、浏览器 `call(channel, endpoint, payload, signal)`。`register()` 会先跑 `requestRejection`（Host/Origin 围栏 + 签名 HttpOnly cookie），**鉴权零成本**。 |
+
+### 为什么是短轮询，不是挂起长连接
+
+`connection.rpc` 能把请求挂住到有活为止，延迟和流量都更好。**没采用**，因为"一个被长期挂住的
+`/api` 响应能否一直存活"在本 codebase 里**没有任何证据**，而它买到的只是几百毫秒——不值得让
+整条链的必经之路建立在一个未验证的假设上。轮询的代价实际很小：回环上一次 300ms 的请求，且
+**没有工作簿打开时完全不发**（绝大多数时间）。真要升级，`src/client/live.ts` 的循环是唯一要改的地方。
+
+### 通道命名
+
+`/spreadjs-live`，**不是** `/spreadjs`。编辑器插件已在 `/spreadjs/api/health` 和
+`/spreadjs/api/config` 注册了普通 webServer 路由（license 握手），共用前缀会让两个插件都得去
+推理 web server 的匹配顺序。**两个插件，两个前缀。**
+
+### 失败模式（刻意做成快速失败）
+
+host 永远不向页面推送——浏览器不先开口就不可达。所以：
+
+- 没有标签页在轮询 → `SJS_LIVE_NO_CLIENT`，**立即**返回，不等到超时
+- 有标签页但不持有指定工作簿 → `SJS_LIVE_UNKNOWN_TARGET`，消息里列出**实际** attached 的 id
+
+这两种是模型能据以行动的；超时不是。
+
+> 注：`dsh-api-gateway/lib/index.js:457` 有 `webServer.registerUpgrade` + WebSocket 的写法可参考。
+> 想换成真推送时用它，代价是要引入 `ws` 依赖并自己做 401/403 upgrade 拒绝与重连。
 
 ---
 

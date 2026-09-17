@@ -13,14 +13,15 @@
  *  2. **`attach` and `list` are the entire public surface.** The way to *act* on
  *     an attached workbook is not published, so a third client plugin that gets
  *     this service still cannot edit a document it does not own.
- *  3. **No UI.** This half renders nothing; it only holds references and, when a
- *     transport is present, executes instructions against them.
+ *  3. **No UI.** This half renders nothing; it holds references, offers them to
+ *     the host, and runs what comes back.
  *
- * The transport that carries instructions from the harness host into this page
- * is deliberately not implemented here — see `docs/design-live-designer-bridge.md`
- * §5 for the candidate channels and the one open decision.
+ * The transport lives in `./live.ts`: this page polls the host's
+ * `{@link LIVE_CHANNEL}`, and the host answers with work addressed to a workbook
+ * it knows this tab holds. See `docs/design-live-designer-bridge.md` §5.
  */
 import { runAgainstProvider, type LiveResult } from './executor.ts'
+import { startLiveChannel } from './live.ts'
 import { BRIDGE_SERVICE, type ClientContextLike, type SpreadjsHostBridge, type SpreadjsWorkbookProvider } from './types.ts'
 
 export const name = 'dsh-spreadjs-excel'
@@ -30,6 +31,11 @@ export const inject: string[] = []
 
 /** Attached providers, in attach order. */
 const attached = new Map<string, SpreadjsWorkbookProvider>()
+
+/** The attached providers, in attach order — what the channel offers to the host. */
+function attachedProviders(): readonly SpreadjsWorkbookProvider[] {
+  return [...attached.values()]
+}
 
 /**
  * Run `code` against one attached workbook. Intentionally NOT published on the
@@ -69,6 +75,16 @@ export function apply(ctx: ClientContextLike): void {
   }
 
   ctx.provide(BRIDGE_SERVICE, bridge)
+
+  // The transport that carries instructions from the harness host into this page.
+  // Optional on both ends: without a connection service nothing polls, and
+  // without an attached workbook nothing is offered.
+  ctx.inject(['connection'], (connected) => {
+    connected.effect(
+      () => startLiveChannel(connected.get('connection'), attachedProviders),
+      'dsh-spreadjs-excel: live workbook channel',
+    )
+  })
 
   ctx.effect(() => () => {
     // The page is unloading or the fiber is disposing: drop every reference so a

@@ -10,6 +10,8 @@ export type SjsOperation =
   | 'export'
   | 'worktree'
   | 'screenshot'
+  /** Ran against the workbook open in a browser designer, not a workspace file. */
+  | 'live'
 
 /** Structured operation result logged in the DSH session. */
 export interface SjsOperationResult {

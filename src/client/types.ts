@@ -7,11 +7,25 @@
  * package's runtime module, and the only verb used is `provide`.
  */
 
+/** The child context handed to an `inject` callback. */
+export interface ClientInjectionContext {
+  /** Read a service the callback declared it depends on. */
+  get(name: string): unknown
+  /** Register a disposer that runs when the declaring fiber disposes. */
+  effect(callback: () => (() => void) | void, label?: string): void
+}
+
 /** The slice of a cordis client Context this bridge uses. */
 export interface ClientContextLike {
   /** Publish a service under `name` for the lifetime of the calling fiber. */
   provide(name: string, value: unknown): void
   effect(callback: () => (() => void) | void, label?: string): void
+  /**
+   * Run `callback` once the named services exist. The callback may never run —
+   * a composition without them is a valid one, and that is how this half stays
+   * silent in a profile that has no web server.
+   */
+  inject(names: readonly string[], callback: (child: ClientInjectionContext) => void): { dispose(): void }
 }
 
 /**
