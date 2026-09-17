@@ -11,19 +11,28 @@
  *                  through `io.*`. Every single request is re-authorized here,
  *                  Node-side, against the session workspace root — the page holds
  *                  no path capability of its own.
- *   /fs?p=<abs>    HOST-AUTHORIZED only. The action the host asked for names
- *                  these paths, and they may legitimately live outside the
- *                  workspace (the host resolved them against its own rules). It
- *                  therefore also requires the per-process capability token in
- *                  `?k=`, which is never placed in a page global: Node inlines it
- *                  in the one call it builds. Without that, sandboxed user code
- *                  could simply `fetch('/fs?p=C:/...')` and read every file the
- *                  process can — which would silently undo the confinement that
- *                  `/ws` exists to enforce.
+ *   /blob/<id>     HOST-AUTHORIZED, one file per id. The host's action names
+ *                  these paths and they may legitimately live outside the
+ *                  workspace (the host resolved them against its own rules), so
+ *                  they cannot be confined by a root the way `/ws` is.
+ *
+ *                  The id is therefore the whole authorization: an opaque nonce
+ *                  minted per file by Node, mapping to exactly one path. There
+ *                  is no route anywhere that accepts a path from the page.
+ *
+ *                  This replaced a per-process bearer token in `?k=`, which was
+ *                  exploitable: the token sat in a URL the page itself fetched,
+ *                  and sandboxed code could recover it with
+ *                  `performance.getEntriesByType('resource')` — no fetch
+ *                  hijacking, no race — then `fetch('/fs?p=C:/any/path&k=…')`
+ *                  and read or write anything the process could reach. A secret
+ *                  the page can read is not a secret, so the fix is not a better
+ *                  secret; it is removing the page's ability to name a path.
  *
  * Bytes are moved as raw request/response bodies, never base64 through CDP: the
  * spike measured HTTP ~15x faster than base64 over Runtime.evaluate for 10 MB.
  */
+import { randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -73,6 +82,20 @@ export interface FileServer {
   readonly origin: string
   /** The workspace root sandboxed `io.*` calls are confined to (set per execute). */
   setWorkspaceRoot(root: string): void
+  /**
+   * Mint an opaque URL for ONE host-authorized file, and return it.
+   *
+   * The URL says nothing about where the file is. Possessing it grants access to
+   * exactly that one already-authorized file — not to a class of paths — so it
+   * is safe to hand to the page even though the page (and any sandboxed code
+   * running in it) can see every URL the page fetches. GET reads the file, POST
+   * writes it back.
+   *
+   * @param absolutePath - a path the host has already authorized under its own
+   *                       rules; it may legitimately live outside the workspace.
+   * @returns the absolute URL to fetch.
+   */
+  registerBlob(absolutePath: string): string
   close(): Promise<void>
 }
 
@@ -100,8 +123,10 @@ export function authorizeWorkspacePath(workspaceRoot: string, requested: string)
   return candidate
 }
 
-export async function startFileServer(options: ServerOptions, capability: string): Promise<FileServer> {
+export async function startFileServer(options: ServerOptions): Promise<FileServer> {
   let workspaceRoot = ''
+  /** Opaque blob id → the one path it stands for. Populated by registerBlob only. */
+  const blobs = new Map<string, string>()
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
@@ -138,14 +163,16 @@ export async function startFileServer(options: ServerOptions, capability: string
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const path = decodeURIComponent(url.pathname)
 
-    if (path === '/fs') {
-      // Host-authorized: reachable only with the capability token Node inlines
-      // into the calls it builds for the page.
-      if (url.searchParams.get('k') !== capability) {
-        respondFailure(response, new HttpFailure(403, 'SJS_FILE_PERMISSION_DENIED', 'host file route requires the runtime capability'))
+    if (path.startsWith('/blob/')) {
+      // Host-authorized: one opaque id, one file. The id carries no path, and
+      // there is no route that accepts a path, so a URL recovered from the
+      // page's resource timing is worth exactly the file Node already chose to
+      // hand over — and nothing else. See registerBlob.
+      const target = blobs.get(path.slice('/blob/'.length))
+      if (target === undefined) {
+        respondFailure(response, new HttpFailure(403, 'SJS_FILE_PERMISSION_DENIED', 'unknown blob id'))
         return
       }
-      const target = resolve(url.searchParams.get('p') ?? '')
       if (request.method === 'GET') {
         try {
           respond(response, 200, await readFile(target), 'application/octet-stream')
@@ -160,11 +187,11 @@ export async function startFileServer(options: ServerOptions, capability: string
           await writeBytesAtomic(target, body)
           respond(response, 200, 'written')
         } catch (error) {
-          respondFailure(response, new HttpFailure(500, 'SJS_FILE_WRITE_FAILED', `cannot write file: ${errorMessage(error)}`))
+          respondFailure(response, new HttpFailure(500, 'SJS_FILE_WRITE_FAILED', `cannot write file: ${target}: ${errorMessage(error)}`))
         }
         return
       }
-      respondFailure(response, new HttpFailure(405, 'SJS_BAD_REQUEST', '/fs accepts GET and POST only'))
+      respondFailure(response, new HttpFailure(405, 'SJS_BAD_REQUEST', 'a blob accepts GET and POST only'))
       return
     }
 
@@ -230,9 +257,16 @@ export async function startFileServer(options: ServerOptions, capability: string
   const address = server.address()
   if (address === null || typeof address === 'string') throw new Error('the file server did not bind a TCP port')
 
+  const origin = `http://127.0.0.1:${String(address.port)}`
+
   return {
-    origin: `http://127.0.0.1:${String(address.port)}`,
+    origin,
     setWorkspaceRoot(root: string) { workspaceRoot = root },
+    registerBlob(absolutePath: string): string {
+      const id = randomBytes(16).toString('hex')
+      blobs.set(id, resolve(absolutePath))
+      return `${origin}/blob/${id}`
+    },
     close: () => new Promise<void>((resolve) => { (server as Server).close(() => { resolve() }) }),
   }
 }

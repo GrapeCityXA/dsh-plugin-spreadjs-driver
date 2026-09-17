@@ -33,7 +33,7 @@ src/workers/sjs/
     runtime.ts           起 server + 浏览器 + 页面，对上层暴露按操作的方法
     cdp.ts               CDP 客户端（Node 自带 WebSocket）、浏览器启停、profile 卫生
     discovery.ts         找 Edge/Chrome：配置 → Edge → Chrome
-    server.ts            回环 HTTP：/ws 与 /fs 两条授权级别不同的路由
+    server.ts            回环 HTTP：/ws 与 /blob 两条授权级别不同的路由
     page.embed.js        页面那一半（Go 无文件系统，只做 SpreadJS）
 ```
 
@@ -43,17 +43,37 @@ src/workers/sjs/
 |---|---|---|
 | `<script src>` / `fetch` 回环 HTTP | UMD bundle、ssjson、xlsx/csv/pdf 字节 | bundle 是包内静态文件；数据文件由 Node 按下面两条路由放行 |
 | `/ws?p=<path>` | 沙箱用户代码的 `io.*` | **工作区受限**，每个请求都在 Node 侧重判一次；越权 → `SJS_FILE_PERMISSION_DENIED` |
-| `/fs?p=<abs>&k=<cap>` | host 指定的路径（可能在工作区外） | **仅 host 可授权**，且要带进程级 capability |
+| `/blob/<id>` | host 指定的那个文件（可能在工作区外） | **id 本身就是授权**：不透明 nonce，一次一个文件，路径由 Node 在注册时定死 |
 | `Runtime.evaluate` | 只传控制信息（表达式、返回值） | 不传字节 |
 
 字节**不走 CDP**：spike 实测 10 MB 负载下回环 HTTP 比 base64 过
 `Runtime.evaluate` 快约 15 倍，而且大工作簿根本不进协议。
 
-`/fs` 的 capability 是必须的，不是洁癖：页面里的沙箱代码能发 `fetch`，
-如果 `/fs` 敞开，一句 `fetch('/fs?p=C:/Users/…/.ssh/id_rsa')` 就能读走任意
-文件，`/ws` 的围栏等于白建。capability 只存在于 Node 构造的那次调用里（作为
-字面量内联），**从不进页面全局**。残余风险（脚本劫持 `fetch` 抓 token，且必须
-在同一个一次性进程内得手）已在代码注释里写明。
+#### 为什么不是"带 token 的 /fs?p=<路径>"（曾经是，且不安全）
+
+最初的实现是 `/fs?p=<绝对路径>&k=<进程级 token>`，token 只在 Node 构造调用的
+时候内联，不进页面全局。**这个设计有一个已实测利用成功的洞：**
+
+页面 fetch 过的每一个 URL 都对页面代码可见——
+`performance.getEntriesByType('resource')` 会列出全部 URL **含查询串**，随时可读。
+沙箱里的用户代码只要：
+
+```js
+const u = performance.getEntriesByType('resource').map(e => e.name).find(u => u.includes('k='))
+const k = new URL(u).searchParams.get('k')
+await (await fetch('/fs?p=C:/任意路径&k=' + k)).text()   // 读；POST 即写
+```
+
+就绕过了 `io.*` 的工作区围栏，读写进程够得到的**任意文件**。原文把这条记为
+"残余风险（脚本劫持 `fetch` 抓 token，且必须在同一个一次性进程内得手）"——
+**低估了**：既不需要劫持，也不需要抢时机。而且这是相对 jsdom 版的**回归**：
+那时用户代码跑在 `node:vm` 里，作用域中没有 `fs`，任意路径本就够不到。
+
+**教训**：页面能读到的秘密不是秘密。所以修法不是换一个更好的秘密，而是
+**取消页面"指认路径"的能力**。host 授权的文件改由 Node 注册成一个不透明 id，
+`/blob/<id>` 映射到唯一一个已授权的路径；没有任何路由接受来自页面的路径。
+即使页面代码读到 `/blob/<id>`，它拿到的也只是 host 本就打算交给这个页面的那
+一份。回归测试见 `test/sandbox-confinement.mjs`。
 
 ### 2.2 页面侧怎么加载 SpreadJS
 

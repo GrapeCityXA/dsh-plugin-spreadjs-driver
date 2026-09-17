@@ -4,9 +4,9 @@
 //   - client half  : src/client/index.ts -> lib/client.js           (loaded into the browser)
 //
 // The host bundle keeps the @deepseek-ai peers external so a second copy of
-// Cordis is never inlined. The worker has no static package imports: its heavy
-// deps (@grapecity-software/*, jsdom, canvas) are loaded at runtime through
-// createRequire, which resolves them from this package's own node_modules.
+// Cordis is never inlined. The worker has no static package imports: the
+// @grapecity-software UMD bundles it drives are located at runtime as files and
+// served to the browser, and the page half ships as page.embed.js.
 // The client half is wrapped as the module-table closure factory the DSH client
 // loader expects (same artifact shape the spreadjs-editor client uses).
 import { build } from 'esbuild'

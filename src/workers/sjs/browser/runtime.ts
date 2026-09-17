@@ -24,7 +24,6 @@
  */
 import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
 import { basename, dirname, join, resolve } from 'node:path'
 import { CDP, Page, launchBrowser, type LaunchedBrowser } from './cdp.ts'
 import { findBrowser } from './discovery.ts'
@@ -196,21 +195,14 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
   const startedAt = performance.now()
   const bundleMap = bundleFiles()
 
-  // The host-route capability (see server.ts): generated per process, never
-  // placed in a page global, inlined only into the calls Node itself builds.
-  const capability = randomBytes(16).toString('hex')
-
   let server: FileServer | undefined
   let browser: LaunchedBrowser | undefined
   let cdp: CDP | undefined
   try {
-    server = await startFileServer(
-      {
-        documents: { '/': APP_HTML, '/index.html': APP_HTML, '/runtime.js': `window.__BUNDLES = ${JSON.stringify(Object.keys(bundleMap))};\n${PAGE_SOURCE}` },
-        files: bundleMap,
-      },
-      capability,
-    )
+    server = await startFileServer({
+      documents: { '/': APP_HTML, '/index.html': APP_HTML, '/runtime.js': `window.__BUNDLES = ${JSON.stringify(Object.keys(bundleMap))};\n${PAGE_SOURCE}` },
+      files: bundleMap,
+    })
 
     const browserPath = options.browserPath ?? process.env['SJS_BROWSER_PATH']
     const located = findBrowser(browserPath)
@@ -234,9 +226,14 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
     log(`[sjs] page ready in ${pageReadyMs.toFixed(0)}ms (${String(injected.bundles)} bundles loaded)`)
 
     const origin = server.origin
-    /** Host-authorized URL: the capability is inlined HERE, per call. */
-    const hostUrl = (absolutePath: string): string =>
-      `${origin}/fs?p=${encodeURIComponent(resolve(absolutePath))}&k=${capability}`
+    const registerBlob = server.registerBlob.bind(server)
+    /**
+     * Host-authorized URL for one file. The path is resolved HERE and never
+     * appears in the URL the page fetches — only an opaque id does, so a URL
+     * recovered from the page's resource timing grants nothing beyond the file
+     * the host already chose to hand over.
+     */
+    const hostUrl = (absolutePath: string): string => registerBlob(resolve(absolutePath))
 
     const read = async <T,>(sourcePath: string, width = HOST_WIDTH, height = HOST_HEIGHT): Promise<{ bytes: number } & T> => {
       const loaded = await callPage<{ bytes: number }>(
