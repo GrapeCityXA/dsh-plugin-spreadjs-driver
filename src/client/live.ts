@@ -94,11 +94,16 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Run one job against the workbook it names, and persist the result.
+ * Run one job against the workbook it names.
+ *
+ * The file is written back **only when the job says so** (`save: true`), which
+ * the host sets only when the user asked to save. Otherwise the edit lives in
+ * the browser: visible, undoable, and not something the agent decided to
+ * commit on the user's behalf.
  *
  * A save failure is reported as a failure even though the edit did land in the
- * browser: the caller's model of the world is the file, and silently reporting
- * success there would leave it believing a change was written that was not.
+ * browser: the caller's model of the world is the file, and reporting success
+ * there would leave it believing a change was written that was not.
  */
 async function runJob(
   providers: () => readonly SpreadjsWorkbookProvider[],
@@ -124,7 +129,7 @@ async function runJob(
   if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
 
   const file = provider.getActivePath?.()
-  if (job.save !== false && provider.save !== undefined) {
+  if (job.save === true && provider.save !== undefined) {
     try {
       await provider.save()
     } catch (error) {

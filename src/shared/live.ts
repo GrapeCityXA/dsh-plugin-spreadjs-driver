@@ -63,9 +63,13 @@ export interface LiveJob {
    */
   readonly target?: string
   /**
-   * Write the workbook back to its file once the code has run. The owner is
-   * asked to save through its own save path, so the file the user is editing is
-   * the file that changes.
+   * Write the workbook back to its file once the code has run.
+   *
+   * **Absent means do not write.** The user's file is only overwritten when
+   * somebody asked for that in so many words; an edit the agent decided to make
+   * belongs on screen, where it can be seen and undone, not on disk. When it is
+   * set, the owner is asked to save through its own save path, so the file the
+   * user is editing is the file that changes.
    */
   readonly save?: boolean
 }

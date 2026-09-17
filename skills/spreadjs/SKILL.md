@@ -42,10 +42,12 @@ ignore it; do not explain the format or make it part of the task.
 - **One tool is the exception: `sjs_live_execute`.** When the user has a workbook
   open in the SpreadJS designer (the sidebar of the DSH web UI), that tool edits
   *that* document **in the browser**, so the change is on screen the moment it
-  lands, and the designer writes the file back. Everything above still describes
-  every other tool. Reach for the live tool when the user is looking at the sheet
-  and the edit is the point of the conversation; use the file tools when the work
-  is batch, long-running, or nobody is watching a designer.
+  lands. **The file on disk is not touched** — the edit lives in the designer,
+  where the user can see it and undo it — unless you pass `save: true`, which you
+  do only when the user asked for the file to be saved or overwritten. Everything
+  above still describes every other tool. Reach for the live tool when the user is
+  looking at the sheet and the edit is the point of the conversation; use the file
+  tools when the work is batch, long-running, or nobody is watching a designer.
 - Rows and columns are **zero-based** in code (`setValue(0, 0)` is cell A1).
   A used-range `row`/`col` is also zero-based; `rowCount`/`colCount` are counts.
 - The sheet-name dictionary is not registered by headless `fromJSON()`, so
@@ -71,7 +73,7 @@ ignore it; do not explain the format or make it part of the task.
 | Start | `sjs_worktree` | `create` an isolated draft snapshot of a committed workbook; `list` open drafts. |
 | Inspect | `sjs_status` | List sheets, dimensions and used ranges of a workbook (metadata, not cell values). |
 | Write | `sjs_execute` | Run SpreadJS JavaScript against one workbook; the file is saved afterwards. |
-| Write | `sjs_live_execute` | Run SpreadJS JavaScript against the workbook **open in the user's designer**, in their browser. Same injected names as `sjs_execute`, but the edit appears on screen at once. Saved back by the designer unless `save: false`. Fails with `SJS_LIVE_NO_CLIENT` when no designer is connected. |
+| Write | `sjs_live_execute` | Run SpreadJS JavaScript against the workbook **open in the user's designer**, in their browser. Same injected names as `sjs_execute`, but the edit appears on screen at once. **The file on disk is untouched** unless you pass `save: true` — do that only when the user asked for the file to be saved or overwritten. Fails with `SJS_LIVE_NO_CLIENT` when no designer is connected. |
 | Verify | `sjs_execute` | Return the cells you need, or call `snapshot()` for the sheet summary. |
 | Verify | `sjs_screenshot` | Render a visual snapshot: `png` (pixel render of the active sheet) or `pdf`. A `png` result reports `clipped: true` when the sheet exceeded the raster ceiling (2600×2200) and the image is a crop. |
 | Deliver | `sjs_export` | Produce the file the user opens: `.xlsx` (Excel), `.csv`, `.pdf`, or a `.ssjson` copy for another tool. Output never overwrites. |
@@ -80,9 +82,10 @@ ignore it; do not explain the format or make it part of the task.
 
 **First, decide which document you are editing.** If the user has a workbook open
 in the SpreadJS designer and the thing you are about to change is what they are
-looking at, use `sjs_live_execute` and skip the file steps below — the designer
-owns that document and writes it back. The flow underneath is for work on a file:
-batch edits, long jobs, or a session where nobody is watching a designer.
+looking at, use `sjs_live_execute` and skip the file steps below — that document
+belongs to the designer, and the change stays there until the user asks for it to
+be saved. The flow underneath is for work on a file: batch edits, long jobs, or a
+session where nobody is watching a designer.
 
 1. **Locate or create the workbook.** Existing file → `sjs_status` on it to see
    sheets and used ranges. Fresh table → `sjs_new`. Real `.xlsx`/`.csv` source →

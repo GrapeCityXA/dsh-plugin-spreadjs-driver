@@ -226,16 +226,19 @@ async function run() {
     )
   })()
 
-  await step('the workbook is saved back by default, and not when save is false', async () => {
-    assert(saves === 1, `expected one save after the default job, got ${saves}`)
-    connection.enqueue({ jobId: 'job-2', code: 'return 1', save: false })
-    await until(() => connection.results.length === 2, 'the unsaved result')
-    assert(saves === 1, `save:false still wrote the file (saves=${saves})`)
+  await step('the file is left untouched unless the job explicitly asks for a save', async () => {
+    // The first job carried no `save`. That is the default an agent gets without
+    // asking, and it is what keeps an unreviewed edit from overwriting the
+    // user's file.
+    assert(saves === 0, `an unattended edit wrote the file (saves=${saves})`)
+    connection.enqueue({ jobId: 'job-2', code: 'return 1', save: true })
+    await until(() => connection.results.length === 2, 'the saved result')
+    assert(saves === 1, `save:true did not write the file (saves=${saves})`)
   })()
 
   await step('a save failure is reported, because the file did NOT change', async () => {
     saveShouldFail = true
-    connection.enqueue({ jobId: 'job-3', code: 'return 1' })
+    connection.enqueue({ jobId: 'job-3', code: 'return 1', save: true })
     await until(() => connection.results.length === 3, 'the failed-save result')
     const result = connection.results[2]
     assert(result.ok === false, `a failed save was reported as success: ${JSON.stringify(result)}`)

@@ -35,14 +35,15 @@ export function liveExecuteTool(ctx: Context, channel: LiveChannel, config: Reso
       + 'Code runs as an async function body with in scope: spread (the live Spread.Sheets.Workbook), '
       + 'workbook (alias), GC, sheet(name?) returning a worksheet, snapshot(), and console. '
       + 'It may return a JSON-serializable value, which comes back to you. '
-      + 'Unless save is false the workbook is written back to its file once the code has run. '
+      + 'The edit stays in the browser: the user can see and undo it, and their file is NOT '
+      + 'modified unless you explicitly ask for that with save: true. '
       + 'Provide exactly one of code or codeFile.',
     timeoutMs: config.operationTimeoutMs,
     parameters: {
       code: { type: 'string', description: 'SpreadJS JavaScript snippet. Mutually exclusive with codeFile.' },
       codeFile: { type: 'string', description: 'Workspace-relative or absolute JavaScript body file to execute. Preferred for multi-line code; mutually exclusive with code.' },
       target: { type: 'string', description: 'Which open workbook to edit, when more than one designer tab is connected. Omit to use whichever is connected.' },
-      save: { type: 'boolean', description: 'Write the workbook back to its file after running (default true). Set false to leave the change only in the browser.' },
+      save: { type: 'boolean', description: 'Write the edit back to the file on disk. Defaults to false, leaving the change only in the designer. Set true ONLY when the user asked to save or overwrite the file.' },
     },
     output: operationOutput,
     async execute(args, exec) {
