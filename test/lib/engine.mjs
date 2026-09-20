@@ -47,8 +47,17 @@ export class TestEngine {
     return this.#child?.pid
   }
 
+  /**
+   * True once the process has actually exited.
+   *
+   * Tested against `#exitInfo`, not `#exited`: the latter is a Promise created
+   * in `start()`, so `#exited !== null` is true from the moment the engine
+   * starts — a getter that answers "has been started" while reading as "has
+   * exited". No test relied on it, which is the only reason it never produced a
+   * green that meant nothing.
+   */
   get exited() {
-    return this.#exited !== null
+    return this.#exitInfo !== null
   }
 
   get exitInfo() {

@@ -14,9 +14,8 @@
  * the browser's own noise all go to stderr. The browser's stdout is not even
  * piped (see cdp.ts) so it cannot land here by accident.
  *
- * The engine exits by itself when it has been idle for `SJS_ENGINE_IDLE_MS`
- * (default 60 s) — a browser per DSH process that never closes is a leak — and
- * when stdin closes, which is what happens when the host exits or is killed.
+ * The engine exits when stdin closes, which is what happens when the host exits
+ * or is killed. It does **not** exit on idle by default — see DEFAULT_IDLE_MS.
  * Either way the browser is taken down first; it is a direct child of this
  * process, so it also cannot outlive a crash of this process.
  */
@@ -26,13 +25,30 @@ import { engineFrameId, parseSjsEngineFrame } from '../../shared/request.ts'
 import { SjsWorkerError } from './errors.ts'
 import { closeRuntime, runOperation } from './operations.ts'
 
-/** Idle lifetime before the engine shuts its browser down and exits. */
-const DEFAULT_IDLE_MS = 60_000
-
-function idleMs(): number {
+/**
+ * Idle lifetime before the engine shuts its browser down and exits.
+ *
+ * **No idle exit by default: the engine lives as long as the DSH process.**
+ *
+ * It used to be 60 s. That number is shorter than an ordinary pause to read an
+ * answer and type the next message, so in real use the browser was torn down and
+ * rebuilt *per message* — which cost a cold start every time, the exact thing
+ * this process model exists to avoid, and churned a headless window per message
+ * while it did it. A warm browser that goes cold between every message is worse
+ * than no warm browser at all, because you pay for it and do not get it.
+ *
+ * The leak the old timeout guarded against does not exist: the browser is a
+ * direct child of this process, so it dies with this process, and stdin closing
+ * (the host exiting or being killed) is the ordinary end.
+ *
+ * `SJS_ENGINE_IDLE_MS` re-enables a bounded idle life; the tests set it to
+ * exercise the shutdown path without waiting for a real host to exit.
+ */
+function idleMs(): number | undefined {
   const raw = process.env['SJS_ENGINE_IDLE_MS']
-  const parsed = raw === undefined ? NaN : Number(raw)
-  return Number.isSafeInteger(parsed) && parsed >= 100 ? parsed : DEFAULT_IDLE_MS
+  if (raw === undefined || raw.trim() === '') return undefined
+  const parsed = Number(raw)
+  return Number.isSafeInteger(parsed) && parsed >= 100 ? parsed : undefined
 }
 
 function log(message: string): void {
@@ -53,11 +69,17 @@ function clearIdle(): void {
   }
 }
 
-/** Arm the idle timer; when it fires nothing is in flight, so nothing is lost. */
+/**
+ * Arm the idle timer; when it fires nothing is in flight, so nothing is lost.
+ * With no `SJS_ENGINE_IDLE_MS` configured there is nothing to arm — the engine
+ * waits for stdin to close instead.
+ */
 function armIdle(): void {
   clearIdle()
   if (ended || shuttingDown) return
-  idle = setTimeout(() => { void shutdown('idle') }, idleMs())
+  const ms = idleMs()
+  if (ms === undefined) return
+  idle = setTimeout(() => { void shutdown('idle') }, ms)
 }
 
 /**
