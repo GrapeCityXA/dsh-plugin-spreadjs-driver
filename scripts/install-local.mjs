@@ -45,10 +45,14 @@ function fail(message) {
 const installable = []
 
 for (const plugin of PLUGINS) {
-  const manifest = readManifest(plugin.repo)
+  const manifest = plugin.repo === undefined ? undefined : readManifest(plugin.repo)
   if (manifest === undefined) {
-    console.log(`${plugin.name}: no local repo at ${plugin.repo} — will install from the registry`)
-    installable.push({ name: plugin.name, spec: plugin.name, repo: '', verify: [] })
+    // Registry entry, or a local repo that is genuinely absent. A pinned version
+    // is used verbatim — an unpinned name would resolve to latest, which for
+    // some packages is a version this DSH cannot run.
+    const spec = plugin.registry === undefined ? plugin.name : `${plugin.name}@${plugin.registry}`
+    console.log(`${plugin.name}: no local source — installing ${spec} from the registry`)
+    installable.push({ name: plugin.name, spec, repo: '', verify: [] })
     continue
   }
   if (!isBuildable(plugin.repo)) {
@@ -76,7 +80,7 @@ for (const plugin of PLUGINS) {
 // --- 2. install into each profile -----------------------------------------------
 const profiles = requested.length > 0
   ? requested
-  : [...new Set(PLUGINS.flatMap((plugin) => (readManifest(plugin.repo) === undefined ? [] : plugin.profiles)))]
+  : [...new Set(PLUGINS.flatMap((plugin) => (plugin.repo === undefined || readManifest(plugin.repo) === undefined ? [] : plugin.profiles)))]
 
 let failed = false
 for (const profile of profiles) {
@@ -96,63 +100,112 @@ for (const profile of profiles) {
     continue
   }
 
+  // One pnpm invocation per operation, never one per plugin.
+  //
+  // Every pnpm call re-resolves the whole dependency graph — this profile
+  // carries ~227 packages once dsh-web-all is in place — and the old
+  // remove-one/add-one-per-plugin loop paid that cost once per plugin per
+  // profile (10 invocations). A slow registry turns each of those resolutions
+  // into a stall: metadata fetches retry with "Will retry in 1 minute", at 0%
+  // CPU, and interrupting one leaves the profile half-installed.
+  //
+  // `--prefer-offline` takes the network out of that resolution by trusting
+  // cached metadata. It is accepted by `add` and NOT by `remove` — pnpm's remove
+  // exposes no offline option at all, and passing the bare flag is a hard error
+  // ("Unknown option: 'prefer-offline'"). So it goes on the add, which is also
+  // the expensive half: a measured remove re-resolved 11 packages, a measured
+  // add re-resolved all 227.
+  const PREFER_OFFLINE = '--prefer-offline'
+
+  // Which entries this profile should carry, and which it should not. A plugin
+  // that targets another profile is still removed here, so a profile that must
+  // not carry it does not keep a stale copy behind.
+  const wanted = []
+  const unwanted = []
   for (const entry of installable) {
     const plugin = PLUGINS.find((candidate) => candidate.name === entry.name)
-    if (plugin !== undefined && !plugin.profiles.includes(profile)) {
-      // Still remove it, so a profile that should not carry it does not keep a stale copy.
-      run('pnpm', ['remove', entry.name], dir)
+    const keep = plugin === undefined || plugin.profiles.includes(profile)
+    ;(keep ? wanted : unwanted).push(entry)
+  }
+
+  // Remove first (all names at once): pnpm treats an unchanged `file:` path +
+  // version as already satisfied and would otherwise reinstall the stored copy
+  // instead of the new build.
+  //
+  // Only names this profile actually declares are passed. `pnpm remove` exits
+  // non-zero on a dependency that is not there (ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS),
+  // and a profile legitimately does not declare the plugins meant for the other
+  // one — so an unfiltered batch would fail every profile that is not the union
+  // of them. There is nothing to remove in that case anyway.
+  const declared = new Set(Object.keys(manifest.dependencies ?? {}))
+  const removing = [...unwanted, ...wanted]
+    .map((entry) => entry.name)
+    .filter((name) => declared.has(name))
+  if (removing.length > 0) {
+    const removed = run('pnpm', ['remove', ...removing], dir)
+    if (removed.status !== 0) {
+      console.error(`  pnpm remove failed:\n${removed.output}`)
+      failed = true
+      // The profile's dependency state is now unknown; adding on top of it would
+      // only compound the damage.
       continue
     }
+    console.log(`  removed: ${removing.join(', ')}`)
+  }
 
-    // Remove first: pnpm treats an unchanged `file:` path + version as already
-    // satisfied and would otherwise reinstall the stored copy instead of the new build.
-    run('pnpm', ['remove', entry.name], dir)
-    const added = run('pnpm', ['add', entry.spec], dir)
+  if (wanted.length > 0) {
+    const added = run('pnpm', ['add', ...wanted.map((entry) => entry.spec), PREFER_OFFLINE], dir)
     if (added.status !== 0) {
-      console.error(`  ${entry.name}: pnpm add failed:\n${added.output}`)
+      // A batched add either lands or does not; pnpm gives no per-package verdict.
+      console.error(`  pnpm add failed for ${wanted.map((entry) => entry.name).join(', ')}:\n${added.output}`)
       failed = true
       continue
     }
-    console.log(`  installed ${entry.name}`)
+    console.log(`  installed: ${wanted.map((entry) => entry.name).join(', ')}`)
+  }
 
-    // Installed is not the same as active: without the bundle entry the plugin
-    // contributes nothing to the session.
-    const current = JSON.parse(readFileSync(manifestPath, 'utf8'))
-    const currentBundles = current?.dsh?.profile?.bundles
-    if (!currentBundles.includes(entry.name)) {
-      currentBundles.push(entry.name)
-      writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`)
+  // Installed is not the same as active: without the bundle row the plugin
+  // contributes nothing to the session. Collected, then written once.
+  const current = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  const currentBundles = current?.dsh?.profile?.bundles
+  let names = [...currentBundles]
+  for (const entry of wanted) {
+    if (!names.includes(entry.name)) {
+      names.push(entry.name)
       console.log(`    added "${entry.name}" to dsh.profile.bundles`)
     }
+  }
+  // A profile that should not carry a plugin must not keep its bundle row either.
+  for (const entry of unwanted) {
+    if (!names.includes(entry.name)) continue
+    names = names.filter((name) => name !== entry.name)
+    console.log(`  removed "${entry.name}" from dsh.profile.bundles (not for this profile)`)
+  }
+  if (names.length !== currentBundles.length || names.some((name, index) => name !== currentBundles[index])) {
+    current.dsh.profile.bundles = names
+    writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`)
+  }
 
-    // Byte-compare what was installed against what was just built.
+  // Byte-compare what was installed against what was just built.
+  for (const entry of wanted) {
     if (entry.repo === '') continue
     const installed = join(dir, 'node_modules', entry.name)
+    let matches = true
     for (const relative of entry.verify) {
       const from = readFileSync(join(entry.repo, relative))
       const target = join(installed, relative)
       const to = existsSync(target) ? readFileSync(target) : null
       if (to === null) {
         console.error(`    ${relative}: missing from the installed copy`)
+        matches = false
         failed = true
       } else if (!from.equals(to)) {
         console.error(`    ${relative}: installed copy differs from the build — the rebuild did not land`)
+        matches = false
         failed = true
       }
     }
-    console.log('    verified: installed artifacts match the build')
-  }
-
-  // A profile that should not carry a plugin must not keep its bundle row either.
-  for (const plugin of PLUGINS) {
-    if (plugin.profiles.includes(profile)) continue
-    const current = JSON.parse(readFileSync(manifestPath, 'utf8'))
-    const currentBundles = current?.dsh?.profile?.bundles
-    if (currentBundles.includes(plugin.name)) {
-      current.dsh.profile.bundles = currentBundles.filter((name) => name !== plugin.name)
-      writeFileSync(manifestPath, `${JSON.stringify(current, null, 2)}\n`)
-      console.log(`  removed "${plugin.name}" from dsh.profile.bundles (not for this profile)`)
-    }
+    if (matches) console.log(`    verified ${entry.name}: installed artifacts match the build`)
   }
 }
 
