@@ -15,7 +15,7 @@
  *     cleans up after the runs the host had to KILL on timeout — those never get
  *     to run any cleanup at all.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
@@ -128,6 +128,94 @@ export async function launchBrowser(options: LaunchBrowserOptions): Promise<Laun
   }
 }
 
+/**
+ * Take the browser's window out of the shell's window switcher.
+ *
+ * `--headless=new` still creates a REAL top-level window — measured: one per
+ * browser, on Edge and Chrome alike, `IsWindowVisible = False`. The user then
+ * sees `sjs-runtime` entries pile up in alt-Tab, and those entries outlive the
+ * process: they are not in the window list, no process owns them, and only
+ * restarting explorer clears them. Enough of them and the machine lags.
+ *
+ * No launch flag removes the window (tried: `--headless=old`, `--window-position`
+ * off-screen, `--no-startup-window`, `--start-minimized`), and the shutdown path
+ * is not the variable either (a direct kill and a graceful close were both clean).
+ * What is left is to stop the shell listing it in the first place:
+ * `WS_EX_TOOLWINDOW` is documented to keep a window out of both the taskbar and
+ * the switcher, and it applies to the window however it later dies.
+ *
+ * Best effort by design: Windows only, shells out to PowerShell, and a browser
+ * that works with a listed window beats one that fails to start. Failures are
+ * logged, never thrown. The pid travels in the ENVIRONMENT — a pid interpolated
+ * into PowerShell source is one quoting mistake away from silently doing nothing.
+ */
+function hideFromWindowSwitcher(pid: number, log?: (message: string) => void): number {
+  if (process.platform !== 'win32') return 0
+  const script = [
+    '$sig = @"',
+    'using System; using System.Runtime.InteropServices;',
+    'public class ShellWin {',
+    '  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);',
+    '  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+    '  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);',
+    '  [DllImport("user32.dll", EntryPoint="GetWindowLongPtr")] public static extern IntPtr GetWindowLongPtr64(IntPtr h, int i);',
+    '  [DllImport("user32.dll", EntryPoint="GetWindowLong")] public static extern IntPtr GetWindowLongPtr32(IntPtr h, int i);',
+    '  [DllImport("user32.dll", EntryPoint="SetWindowLongPtr")] public static extern IntPtr SetWindowLongPtr64(IntPtr h, int i, IntPtr v);',
+    '  [DllImport("user32.dll", EntryPoint="SetWindowLong")] public static extern IntPtr SetWindowLongPtr32(IntPtr h, int i, IntPtr v);',
+    '  public static IntPtr Get(IntPtr h, int i) { return IntPtr.Size == 8 ? GetWindowLongPtr64(h,i) : GetWindowLongPtr32(h,i); }',
+    '  public static IntPtr Set(IntPtr h, int i, IntPtr v) { return IntPtr.Size == 8 ? SetWindowLongPtr64(h,i,v) : SetWindowLongPtr32(h,i,v); }',
+    '  public delegate bool EnumProc(IntPtr h, IntPtr p);',
+    '}',
+    '"@',
+    'Add-Type $sig',
+    '$target = [int]$env:SJS_HIDE_PID',
+    '$GWL_EXSTYLE = -20',
+    '$WS_EX_TOOLWINDOW = 0x00000080',
+    '$script:hidden = 0',
+    '$cb = [ShellWin+EnumProc]{ param($h,$p)',
+    '  $q = 0',
+    '  [void][ShellWin]::GetWindowThreadProcessId($h, [ref]$q)',
+    '  if ($q -eq $target -and [ShellWin]::GetWindowTextLength($h) -gt 0) {',
+    '    $style = [int64]([ShellWin]::Get($h, $GWL_EXSTYLE))',
+    '    [void][ShellWin]::Set($h, $GWL_EXSTYLE, [IntPtr]($style -bor $WS_EX_TOOLWINDOW))',
+    '    $script:hidden++',
+    '  }',
+    '  return $true',
+    '}',
+    '[void][ShellWin]::EnumWindows($cb, [IntPtr]::Zero)',
+    'Write-Output $script:hidden',
+  ].join('\n')
+
+  try {
+    const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, SJS_HIDE_PID: String(pid) },
+    })
+    const hidden = Number(String(result.stdout).trim())
+    const count = Number.isFinite(hidden) ? hidden : 0
+    log?.(`[sjs] window switcher: hid ${String(count)} window(s)`)
+    return count
+  } catch (error) {
+    log?.(`[sjs] window switcher: could not apply WS_EX_TOOLWINDOW (${errorMessage(error)})`)
+    return 0
+  }
+}
+
+/**
+ * Apply the tool-window style, retrying once.
+ *
+ * The browser's window may not exist the instant DevTools answers, and a single
+ * miss would leave the whole point of this undone — so one retry after a short
+ * pause, which is far cheaper than the PowerShell call it guards.
+ */
+async function hideWindowSwitcherWhenReady(pid: number | undefined, log?: (message: string) => void): Promise<void> {
+  if (pid === undefined || process.platform !== 'win32') return
+  if (hideFromWindowSwitcher(pid, log) > 0) return
+  await sleep(400)
+  hideFromWindowSwitcher(pid, log)
+}
+
 async function launchOnce(options: LaunchBrowserOptions): Promise<LaunchedBrowser> {
   const { exe, headless = true, timeoutMs = 30_000 } = options
   const parent = profileParent()
@@ -204,6 +292,10 @@ async function launchOnce(options: LaunchBrowserOptions): Promise<LaunchedBrowse
     await removeProfileDir(dir)
     throw retryable(error)
   }
+
+  // Before anything loads a page: the shell must never get the chance to list
+  // this window in alt-Tab (see hideFromWindowSwitcher).
+  await hideWindowSwitcherWhenReady(proc.pid, options.log)
 
   return {
     proc,
