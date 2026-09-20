@@ -16,35 +16,21 @@
 // reached through an opaque per-file id. So the assertion is not "the token is
 // absent" — that would pass on a half-fix. It is "no route lets page code read
 // a file the host did not authorize", which is checked by attacking the routes.
-import { spawn } from 'node:child_process'
+//
+// Stage 2 added a second, smaller hazard to the same mechanism: the id registry
+// used to die with the process, and a process now serves many operations. That
+// is asserted here too — a nonce must be dead in the operation after the one
+// that minted it.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createHarness } from './lib/engine.mjs'
 
-const WORKER = fileURLToPath(new URL('../artifacts/sjs-worker.mjs', import.meta.url))
+const engine = createHarness()
+const runWorker = engine.runWorker
 
 function assert(condition, message) {
   if (!condition) throw new Error(`assertion failed: ${message}`)
-}
-
-function runWorker(request, timeoutMs = 120_000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [WORKER], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-    const out = []
-    const err = []
-    child.stdout.on('data', (chunk) => out.push(chunk))
-    child.stderr.on('data', (chunk) => err.push(chunk))
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`worker timed out after ${timeoutMs}ms`)) }, timeoutMs)
-    child.once('error', (error) => { clearTimeout(timer); reject(error) })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      const text = Buffer.concat(out).toString('utf8').trim()
-      try { resolve(JSON.parse(text)) }
-      catch { reject(new Error(`worker returned non-JSON stdout (exit ${code}): ${text || '(empty)'}\n${Buffer.concat(err).toString('utf8')}`)) }
-    })
-    child.stdin.end(JSON.stringify(request))
-  })
 }
 
 let failures = 0
@@ -97,7 +83,7 @@ async function run() {
       results.push(await attempt('blob id with an appended path', origin + '/blob/' + (blob ? blob.split('/blob/')[1] : 'x') + '?p=' + enc(outside)))
       results.push(await attempt('forged blob id', origin + '/blob/' + '0'.repeat(32)))
       if (blob) results.push(await attempt('blob id as issued', blob))
-      return { urlCount: urls.length, blobSeen: Boolean(blob), results }
+      return { urlCount: urls.length, blobSeen: Boolean(blob), blobUrl: blob || null, results }
     `
 
     let probe
@@ -150,7 +136,31 @@ async function run() {
       assert(forged.leaked === false, 'a forged blob id read a file')
       assert(forged.status === 403, `a forged blob id should be refused, got HTTP ${String(forged.status)}`)
     })()
+
+    await step('a blob nonce dies with the operation that minted it', async () => {
+      // A persistent engine mints a nonce per file per operation (a PDF export
+      // alone mints ~136), so the registry is cleared at the start of every
+      // operation. What that buys: a URL recovered from one page is worthless in
+      // the next — and the registry cannot grow for the engine's whole life.
+      assert(typeof probe.blobUrl === 'string' && probe.blobUrl.length > 0, 'the probe never captured a blob URL to replay')
+      const replay = await runWorker({
+        op: 'execute',
+        sourcePath: book,
+        workspaceRoot: workspace,
+        code: `try {
+                 const response = await fetch(${JSON.stringify(probe.blobUrl)})
+                 return { status: response.status, body: await response.text() }
+               } catch (error) { return { status: 'threw', body: String(error) } }`,
+      })
+      assert(replay.ok === true, `replay execute failed: ${JSON.stringify(replay)}`)
+      assert(replay.result.status === 403, `a nonce from an earlier operation still answered HTTP ${String(replay.result.status)}`)
+      assert(
+        replay.result.body.includes('unknown blob id'),
+        `the stale nonce was refused for another reason: ${String(replay.result.body).slice(0, 200)}`,
+      )
+    })()
   } finally {
+    await engine.close()
     await rm(workspace, { recursive: true, force: true }).catch(() => undefined)
     await rm(outsideDir, { recursive: true, force: true }).catch(() => undefined)
   }

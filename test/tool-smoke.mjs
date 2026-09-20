@@ -1,8 +1,10 @@
 // Host tool-chain smoke: boot the real cordis host bundle (lib/index.js) with a
 // ToolRuntime, then drive sjs_new → sjs_execute → sjs_status → sjs_export →
-// sjs_import through ctx.tools.execute deterministically — no agent/LLM. Each
-// operation spawns a real one-shot worker, so this exercises provider path
-// authorization + the tool definitions + the worker over the full protocol.
+// sjs_import through ctx.tools.execute deterministically — no agent/LLM. Every
+// operation goes through the provider to a real engine process (started on the
+// first call and reused after that), so this exercises provider path
+// authorization + the tool definitions + the engine over the full protocol —
+// including what happens when that engine dies mid-call.
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +14,7 @@ import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as SpreadjsPlugin from '../lib/index.js'
+import { findEnginePids } from './lib/engine.mjs'
 
 const { resolveConfig } = SpreadjsPlugin
 
@@ -416,6 +419,56 @@ await step('sjs_status rejects an outside-workspace path', async () => {
 await step('sjs_status reports a missing workbook as invalid path', async () => {
   const result = await callTool('sjs_status', { file: 'missing.ssjson' })
   assertErrorCode(result, 'INVALID_FILE_PATH', 'missing workbook')
+})
+
+// --- engine lifecycle (stage 2) ---------------------------------------------
+//
+// The engine is a long-lived process now, so "the worker went away" is no longer
+// the same thing as "this call failed": it can happen MID-call, and the host has
+// to fail that call with a code the model can act on and start a fresh engine for
+// the next one.
+await step('a call fails with SJS_ENGINE_DIED when the engine dies mid-request', async () => {
+  const pidsBefore = findEnginePids({ parentPid: process.pid })
+  assert(pidsBefore.length > 0, 'no engine is running before the kill step, so there is nothing to test')
+  // A script that parks in the page: the sandbox allows timers, so the request is
+  // in flight for a known long time and the kill cannot race its arrival.
+  const hanging = callTool('sjs_execute', {
+    file: 'ledger.ssjson',
+    code: 'await new Promise((resolve) => setTimeout(resolve, 60000)); return "never"',
+  })
+  await new Promise((resolve) => setTimeout(resolve, 3000))
+  const target = findEnginePids({ parentPid: process.pid })[0]
+  assert(target !== undefined, 'the engine disappeared before it could be killed')
+  process.kill(target)
+  const result = await hanging
+  assertErrorCode(result, 'SJS_ENGINE_DIED', 'the engine died while the call was running')
+})
+
+await step('the next call starts a fresh engine instead of writing into a corpse', async () => {
+  const result = await callTool('sjs_status', { file: 'ledger.ssjson' })
+  const body = okJson(result, 'sjs_status after the engine was killed')
+  assert(body.result.sheets.length >= 1, 'the restarted engine reports the workbook')
+})
+
+await step('an aborted call fails promptly and leaves a usable engine behind', async () => {
+  // The other half of the same hazard: cancelling kills the engine, so the call
+  // that was in flight has to be failed by the cancellation itself. Waiting for
+  // the process to exit instead would leave it pending forever — the engine is
+  // gone and nothing else will ever answer.
+  const controller = new AbortController()
+  const hanging = toolContext.tools.execute({
+    signal: controller.signal,
+    callId: ToolCallId('tool-smoke-abort'),
+    name: 'sjs_execute',
+    arguments: { file: 'ledger.ssjson', code: 'await new Promise((resolve) => setTimeout(resolve, 60000)); return 1' },
+    agent,
+  })
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  controller.abort()
+  const result = await hanging
+  assert(result.isError === true, `an aborted call must not report success: ${JSON.stringify(result.content ?? result)}`)
+  const after = await callTool('sjs_status', { file: 'ledger.ssjson' })
+  assert(okJson(after, 'sjs_status after the abort').result.sheets.length >= 1, 'the engine still works after an abort')
 })
 
 await rm(WORKSPACE, { recursive: true, force: true })

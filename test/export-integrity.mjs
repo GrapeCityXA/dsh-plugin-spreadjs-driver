@@ -19,20 +19,18 @@
 //   readers are dependency-free (node builtins only) and live in test/lib/, ported
 //   from the browser spike's scratch readers when that directory was retired.
 //
-// The worker is driven exactly as worker-smoke drives it — spawn
-// artifacts/sjs-worker.mjs, one JSON request on stdin, one JSON envelope on stdout.
-// DSH is never booted and the tool layer is never used: the bytes come from the
-// worker, so the worker is the thing to test.
-import { spawn } from 'node:child_process'
+// The engine is driven exactly as worker-smoke drives it — start
+// artifacts/sjs-worker.mjs once, then send newline-delimited `{id, request}`
+// frames and read one `{id, ok, result|error}` envelope per request. DSH is
+// never booted and the tool layer is never used: the bytes come from the
+// engine, so the engine is the thing to test.
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { inspectXlsx } from './lib/xlsx.mjs'
 import { decodePng, pngStats, inkRows } from './lib/png.mjs'
 import { inspectPdf } from './lib/pdf.mjs'
-
-const WORKER = fileURLToPath(new URL('../artifacts/sjs-worker.mjs', import.meta.url))
+import { createHarness } from './lib/engine.mjs'
 
 const SHEET = '销售明细'
 const CJK_HEADER = '订单号'
@@ -56,38 +54,8 @@ const FIRST_PRODUCT = ROWS[0][1] * ROWS[0][2]
 /** What `#,##0.000` should render a value as — derived here, never read back. */
 const rendered = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })
 
-/** Send one request and resolve with the parsed envelope. */
-function runWorker(request, { timeoutMs = 60_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [WORKER], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    const stdout = []
-    const stderr = []
-    child.stdout.on('data', (chunk) => stdout.push(chunk))
-    child.stderr.on('data', (chunk) => stderr.push(chunk))
-    const timer = setTimeout(() => {
-      child.kill()
-      reject(new Error(`worker timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      const text = Buffer.concat(stdout).toString('utf8').trim()
-      try {
-        const envelope = JSON.parse(text)
-        resolve({ envelope, exitCode: code, stderr: Buffer.concat(stderr).toString('utf8') })
-      } catch {
-        reject(new Error(`worker returned non-JSON stdout (exit ${String(code)}): ${text || '(empty)'}\nstderr: ${Buffer.concat(stderr).toString('utf8')}`))
-      }
-    })
-    child.stdin.end(JSON.stringify(request))
-  })
-}
+const engine = createHarness()
+const runWorker = engine.runWorker
 
 function assert(condition, message) {
   if (!condition) throw new Error(`assertion failed: ${message}`)
@@ -137,7 +105,7 @@ const run = async () => {
   let pngShot = null
 
   await step('new creates the workbook that is exported', async () => {
-    const { envelope } = await runWorker({ op: 'new', targetPath: workbook })
+    const envelope = await runWorker({ op: 'new', targetPath: workbook })
     assertOk(envelope, 'new')
   })()
 
@@ -166,7 +134,7 @@ const run = async () => {
       `return { sheet: s.name(), header: s.getValue(0, 0), first: s.getValue(1, 3), total: s.getValue(${TOTAL_ROW0}, 3),`,
       '         text: s.getText(1, 3), fmt: s.getStyle(1, 3).formatter }',
     ].join('\n')
-    const { envelope } = await runWorker({ op: 'execute', sourcePath: workbook, workspaceRoot: dir, code })
+    const envelope = await runWorker({ op: 'execute', sourcePath: workbook, workspaceRoot: dir, code })
     assertOk(envelope, 'build execute')
     const built = envelope.result
     assert(built.sheet === SHEET, `sheet renamed (got ${built.sheet})`)
@@ -178,7 +146,7 @@ const run = async () => {
   })()
 
   await step('export writes the .xlsx', async () => {
-    const { envelope } = await runWorker({ op: 'export', sourcePath: workbook, outputPath: xlsxOut, format: 'xlsx' })
+    const envelope = await runWorker({ op: 'export', sourcePath: workbook, outputPath: xlsxOut, format: 'xlsx' })
     assertOk(envelope, 'export xlsx')
     assert(envelope.result.bytes > 0, 'export reports bytes')
   })()
@@ -243,14 +211,14 @@ const run = async () => {
   await step('export -> import back preserves the cell, the formula value and the format', async () => {
     const back = join(dir, 'back.ssjson')
     const imported = await runWorker({ op: 'import', sourcePath: xlsxOut, targetPath: back })
-    assertOk(imported.envelope, 'import the exported xlsx back')
+    assertOk(imported, 'import the exported xlsx back')
     const code = [
       `const s = sheet(${JSON.stringify(SHEET)})`,
       'spread.resumeCalcService()',
       `return { header: s.getValue(0, 0), first: s.getValue(1, 3), total: s.getValue(${TOTAL_ROW0}, 3),`,
       '         text: s.getText(1, 3), fmt: s.getStyle(1, 3).formatter }',
     ].join('\n')
-    const { envelope } = await runWorker({ op: 'execute', sourcePath: back, workspaceRoot: dir, code })
+    const envelope = await runWorker({ op: 'execute', sourcePath: back, workspaceRoot: dir, code })
     assertOk(envelope, 'read the round-tripped workbook')
     const value = envelope.result
     assert(value.header === CJK_HEADER, `edited CJK cell survived (got ${JSON.stringify(value.header)})`)
@@ -265,7 +233,7 @@ const run = async () => {
     // the sheet at one of them. Without this the sheet's default family (Calibri)
     // is unregistered on a host that has no Calibri, the writer drops every glyph,
     // and the test would report a hollow PDF for a reason that is not the plugin's.
-    const { envelope } = await runWorker({ op: 'export', sourcePath: workbook, outputPath: join(dir, 'preflight.pdf'), format: 'pdf' })
+    const envelope = await runWorker({ op: 'export', sourcePath: workbook, outputPath: join(dir, 'preflight.pdf'), format: 'pdf' })
     if (envelope.ok !== true) {
       assert(
         envelope.error?.code !== 'SJS_PDF_FONT_UNAVAILABLE',
@@ -282,12 +250,12 @@ const run = async () => {
       `return s.getStyle(0, 0).fontFamily ?? ${JSON.stringify(family)}`,
     ].join('\n')
     const applied = await runWorker({ op: 'execute', sourcePath: workbook, workspaceRoot: dir, code })
-    assertOk(applied.envelope, `set the sheet font to ${family}`)
+    assertOk(applied, `set the sheet font to ${family}`)
     console.log(`        ${fonts.length} families registered; using ${JSON.stringify(family)}`)
   })()
 
   await step('pdf: a font file is EMBEDDED, not merely named', async () => {
-    const { envelope } = await runWorker({ op: 'export', sourcePath: workbook, outputPath: pdfOut, format: 'pdf' }, { timeoutMs: 120_000 })
+    const envelope = await runWorker({ op: 'export', sourcePath: workbook, outputPath: pdfOut, format: 'pdf' }, { timeoutMs: 120_000 })
     assertOk(envelope, 'export pdf')
     pdfShot = envelope.result
     const pdf = inspectPdf(await readFile(pdfOut))
@@ -322,7 +290,7 @@ const run = async () => {
   })()
 
   await step('png: real ink, not a blank or uniform frame', async () => {
-    const { envelope } = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pngOut, format: 'png' }, { timeoutMs: 120_000 })
+    const envelope = await runWorker({ op: 'screenshot', sourcePath: workbook, outputPath: pngOut, format: 'png' }, { timeoutMs: 120_000 })
     assertOk(envelope, 'screenshot png')
     pngShot = envelope.result
     const png = decodePng(await readFile(pngOut))
@@ -344,6 +312,7 @@ const run = async () => {
     assert(pngShot.sheet === SHEET, `the render is the data sheet (got ${pngShot.sheet})`)
   })()
 
+  await engine.close()
   await rm(dir, { recursive: true, force: true })
   if (failures > 0) {
     console.error(`\nexport-integrity: ${failures} failing step(s)`)
