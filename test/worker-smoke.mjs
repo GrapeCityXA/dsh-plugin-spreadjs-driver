@@ -9,7 +9,7 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { browserProcessCount, createHarness, pageWindowCount } from './lib/engine.mjs'
+import { browserProcessPids, createHarness, pageWindowCount } from './lib/engine.mjs'
 
 const engine = createHarness()
 const runWorker = engine.runWorker
@@ -43,7 +43,13 @@ const run = async () => {
   const workbook = join(dir, 'ledger.ssjson')
   // Baseline for the orphan check at the end: engines belonging to OTHER
   // sessions (a dev machine running DSH) must not be counted as ours.
-  const browsersBefore = browserProcessCount()
+  //
+  // Printed, not just compared: this check once compared 1 with 1 forever
+  // because the observer matched its own command line, and a guard that cannot
+  // fail reads exactly like a guard that passes. A number in the log is what
+  // makes a vacuous pass visible to whoever reads it.
+  const browsersBefore = browserProcessPids()
+  console.log(`        engine browsers before the run: ${String(browsersBefore?.length ?? '?')}`)
   console.log('engine smoke')
 
   await step('new creates an empty workbook', async () => {
@@ -526,23 +532,31 @@ const run = async () => {
     // Measured, not assumed: the browser is a direct child of the engine, so it
     // dies with it in every mode (killed, detached, crashed). This is the check
     // that would catch a regression to a detached or shell-launched browser.
+    //
+    // Two assertions, because either alone can be vacuous. The instrument has to
+    // have SEEN our browser while the engine was serving (otherwise "nothing
+    // left" means nothing was ever there to leave), and then none of the
+    // browsers seen may still be alive afterwards. PIDs, not counts: another
+    // session's engine must neither hide a survivor nor manufacture one.
+    const during = browserProcessPids()
     await engine.close()
-    if (browsersBefore === null) {
+    if (during === null || browsersBefore === null) {
       console.log('        (skipped: orphan detection is Windows-only)')
       return
     }
-    // Killing the engine is the abrupt path — nothing gets to close the browser
-    // politely — so this is the strongest form of the check. A moment's grace:
-    // process teardown is asynchronous even when the chain is intact.
-    let after = browserProcessCount() ?? 0
-    for (let attempt = 0; attempt < 20 && after > browsersBefore; attempt++) {
+    const known = new Set([...(browsersBefore ?? []), ...during])
+    let survivors = browserProcessPids() ?? []
+    for (let attempt = 0; attempt < 20 && survivors.some((pid) => known.has(pid)); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 250))
-      after = browserProcessCount() ?? 0
+      survivors = browserProcessPids() ?? []
     }
+    const left = survivors.filter((pid) => known.has(pid))
+    console.log(`        engine browsers: ${String(browsersBefore.length)} before, ${String(during.length)} while serving, ${String(left.length)} of those still alive after`)
     assert(
-      after <= browsersBefore,
-      `${String(after - browsersBefore)} browser process(es) with the throwaway profile prefix outlived their engine (was ${String(browsersBefore)} before the run, ${String(after)} after)`,
+      during.length > browsersBefore.length,
+      `the browser count never saw this run's engine (${String(browsersBefore.length)} before, ${String(during.length)} while it was serving), so "nothing left behind" would prove nothing`,
     )
+    assert(left.length === 0, `${String(left.length)} browser process(es) with the throwaway profile prefix outlived their engine (pids ${left.join(',')})`)
   })()
 
   await rm(dir, { recursive: true, force: true })

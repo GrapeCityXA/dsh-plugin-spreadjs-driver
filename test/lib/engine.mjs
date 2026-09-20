@@ -14,6 +14,7 @@
 //  - every reply is matched to its request by id, so a stray line cannot be
 //    mistaken for an answer.
 import { spawn, spawnSync } from 'node:child_process'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 export const WORKER = fileURLToPath(new URL('../../artifacts/sjs-worker.mjs', import.meta.url))
@@ -243,16 +244,43 @@ export function createHarness(options = {}) {
  * safe way to kill one in a test, since a developer's machine may be running
  * another session's engine, and killing that one would be both rude and a
  * confusing failure.
+ *
+ * The name filter is not decoration: an observer that counts processes by their
+ * COMMAND LINE matches itself, because its own command line contains the string
+ * it is looking for. Measured: with no engine running at all, the command-line
+ * -only version returned the PowerShell observer's PID, which made "an engine
+ * exists" true on an empty machine.
  */
 export function findEnginePids({ parentPid } = {}) {
   if (process.platform === 'win32') {
     const filter = parentPid === undefined ? '' : ` -and $_.ParentProcessId -eq ${String(parentPid)}`
     const script = [
       '-NoProfile', '-Command',
-      `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*sjs-worker.mjs*'${filter} }).ProcessId -join ','`,
+      `(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*sjs-worker.mjs*'${filter} }).ProcessId -join ','`,
     ]
     const out = spawnSync('powershell', script, { encoding: 'utf8', windowsHide: true })
-    return parsePids(out.stdout)
+    return selfExcluded(parsePids(out.stdout))
+  }
+  // /proc, not `ps`: argv is inspected as a vector, so the executable is
+  // checked (`node`) instead of pattern-matching a line of text that a shell
+  // could also contain.
+  if (process.platform === 'linux') {
+    const found = []
+    for (const entry of readdirSafe('/proc')) {
+      if (!/^\d+$/.test(entry)) continue
+      const pid = Number(entry)
+      if (selfExcluded([pid]).length === 0) continue
+      try {
+        const argv = readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\0')
+        if (!/(^|[\\/])node(\.exe)?$/.test(argv[0] ?? '')) continue
+        if (!argv.some((value) => value.endsWith('sjs-worker.mjs'))) continue
+        if (parentPid !== undefined && ppidOf(entry) !== parentPid) continue
+        found.push(pid)
+      } catch {
+        // exited between listing and reading — not a process we can count
+      }
+    }
+    return found
   }
   const out = spawnSync('ps', ['-eo', 'pid,ppid,args'], { encoding: 'utf8', windowsHide: true })
   return String(out.stdout)
@@ -264,23 +292,61 @@ export function findEnginePids({ parentPid } = {}) {
     })
     .filter((entry) => Number.isFinite(entry.pid) && (parentPid === undefined || entry.ppid === parentPid))
     .map((entry) => entry.pid)
+    .filter((pid) => selfExcluded([pid]).length > 0)
+}
+
+function readdirSafe(path) {
+  try {
+    return readdirSync(path)
+  } catch {
+    return []
+  }
+}
+
+function ppidOf(entry) {
+  try {
+    const stat = readFileSync(`/proc/${entry}/stat`, 'utf8')
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+  } catch {
+    return -1
+  }
+}
+
+/** Drop this process and its direct parent: an observer is never the thing it observes. */
+function selfExcluded(pids) {
+  return pids.filter((pid) => pid !== process.pid && pid !== process.ppid)
 }
 
 /**
- * Browsers this runtime started: their command line carries the throwaway
- * profile prefix, which is what tells them apart from the user's own browser.
+ * Browser processes this runtime started: their command line carries the
+ * throwaway profile prefix, which is what tells them apart from the user's own
+ * browser. Main processes only — a browser is ~15 processes and the `--type=`
+ * helpers come and go with it.
+ *
+ * The image-name filter is required, not cosmetic. Counting by command line
+ * ALONE matches the observer itself, whose command line contains the very
+ * string it is searching for: measured, on a machine with zero browsers this
+ * returned 1 on every call, so the assertions built on it compared 1 with 1 and
+ * passed without checking anything at all. scripts/audit-browsers.mjs never had
+ * the bug because it filters on the image name first; this now matches it.
  *
  * Windows-only, deliberately: the check it feeds is about orphaned msedge
  * children on the platform where a child is NOT killed with its parent.
  */
-export function browserProcessCount() {
+export function browserProcessPids() {
   if (process.platform !== 'win32') return null
   const script = [
     '-NoProfile', '-Command',
-    `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${PROFILE_PREFIX}*' }).ProcessId -join ','`,
+    `(Get-CimInstance Win32_Process -Filter "Name='msedge.exe' or Name='chrome.exe'" | ` +
+      `Where-Object { $_.CommandLine -like '*${PROFILE_PREFIX}*' -and $_.CommandLine -notlike '*--type=*' }).ProcessId -join ','`,
   ]
   const out = spawnSync('powershell', script, { encoding: 'utf8', windowsHide: true })
-  return parsePids(out.stdout).length
+  return selfExcluded(parsePids(out.stdout))
+}
+
+/** How many engine browsers are alive (null where the platform cannot say). */
+export function browserProcessCount() {
+  return browserProcessPids()?.length ?? null
 }
 
 /**
