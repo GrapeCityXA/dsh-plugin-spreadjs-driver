@@ -2,7 +2,7 @@
 // Runs `npm pack --dry-run --json` and compares the file list against the
 // required runtime set (host bundle, worker, skill, docs, patches).
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -62,6 +62,48 @@ const required = [
 const missing = required.filter((path) => !shipped.has(path))
 if (missing.length > 0) {
   console.error(`tarball is missing required runtime file(s):\n  ${missing.join('\n  ')}`)
+  process.exit(1)
+}
+
+// --- what the manifest DECLARES must be what actually ships --------------------
+//
+// A package can ship every file it needs and still be unloadable. This check
+// exists because that happened: the build produced lib/client.js, the tarball
+// shipped it, the installed copy byte-matched the build — and `dsh web` still
+// refused to boot, because DSH resolves a client half through
+// `exports["./client"]` and the manifest had no such export. Nothing else in
+// this repo looks at a declaration and its artifact together, and no test that
+// drives artifacts can: composition happens in DSH, at boot.
+const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+
+/** Every local path the manifest promises, tagged with where the promise is. */
+const declared = []
+const declare = (where, value) => {
+  if (typeof value !== 'string' || !value.startsWith('./')) return
+  declared.push({ where, path: value.slice(2) })
+}
+declare('main', manifest.main)
+declare('dsh.bundle.patch', manifest.dsh?.bundle?.patch)
+for (const [key, target] of Object.entries(manifest.exports ?? {})) {
+  declare(`exports[${JSON.stringify(key)}]`, typeof target === 'string' ? target : target?.default)
+}
+
+// The one declaration with a companion requirement rather than just a target.
+if (manifest.dsh?.client !== undefined && manifest.exports?.['./client'] === undefined) {
+  console.error(
+    'package.json declares dsh.client but has no exports["./client"].\n'
+    + '  DSH resolves the client half through that export — not by any filename\n'
+    + '  convention — so the plugin fails to compose and `dsh web` will not boot,\n'
+    + '  even though lib/client.js is built and shipped. Mirror the shape used by\n'
+    + '  @grapecity-software/dsh-spreadjs-editor.',
+  )
+  process.exit(1)
+}
+
+const undeclared = declared.filter(({ path }) => !shipped.has(path))
+if (undeclared.length > 0) {
+  console.error('tarball is missing file(s) the manifest declares:')
+  for (const { where, path } of undeclared) console.error(`  ${where} -> ${path}`)
   process.exit(1)
 }
 // The bundled API reference is what makes "look it up, never guess" work offline.
