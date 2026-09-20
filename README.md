@@ -99,7 +99,7 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 pnpm install
 pnpm run typecheck     # tsc --noEmit
 pnpm run build         # esbuild → lib/index.js + artifacts/sjs-worker.mjs
-pnpm test:all          # typecheck + build + worker-smoke + tool-smoke
+pnpm test:all          # typecheck + build + worker-smoke + export-integrity + tool-smoke
 npm pack               # → dsh-spreadjs-excel-<version>.tgz
 ```
 

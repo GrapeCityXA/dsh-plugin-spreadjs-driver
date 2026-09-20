@@ -1,8 +1,13 @@
 # 测试计划 · dsh-spreadjs-excel 1.0
 
-`pnpm run ci`（worker-smoke + tool-smoke + pack 校验 + 从 pack 冒烟）是无 LLM 的
+`pnpm run ci`（worker-smoke + **export-integrity** + tool-smoke + live/client/confinement + pack 校验 + 从 pack 冒烟）是无 LLM 的
 **回归网**；`docs/e2e-checklist.md` 是发版前的**人工验收**。本文是两者的补充：按
 风险维度穷举用例，标注覆盖状态，未覆盖的留给下一轮。
+
+| 套件 | 校验的是 |
+|---|---|
+| `test:worker` / `test:tool` | 协议、错误码、全链行为；产物只看**魔数与长度** |
+| `test:integrity` | 产物的**字节**：zip 条目 CRC-32 与尺寸、CJK 字节级一致、公式缓存值、数字格式、xlsx 往返；PDF 字体**真嵌入**（FontFile + 子集前缀）与文本操作符；PNG 真实墨迹与尺寸 |
 
 图例：✅ CI 已覆盖 ｜ 🧪 已手工验证 ｜ ⬜ 待测 ｜ ⚠️ 已知限制
 
@@ -18,7 +23,7 @@
 | A2 | 扩容后公式重算 | ✅ | 同一回归步断言 `=SUM(A1:A5000)` 得 12,497,500 |
 | A3 | 并发编辑同一工作簿 | ✅ | host 层按工作簿路径串行；6 路并发全保留。回归：tool-smoke「concurrent edits」 |
 | A4 | 不同工作簿并发 | ✅ | 各走各的链，互不阻塞（同上回归的隐含前提） |
-| A5 | xlsx 往返保真：公式/样式/合并/列宽 | 🧪 | fixtures 往返已验证公式存活；样式待逐项核对 |
+| A5 | xlsx 往返保真：公式/样式/合并/列宽 | 🧪 | fixtures 往返已验证公式存活；样式待逐项核对。公式**缓存值**与数字格式（numFmt→cellXfs→cell 的整条链）现已由 `test:integrity` 独立校验；合并/列宽仍未覆盖 |
 | A6 | xlsx 往返保真：条件格式、数据验证、批注、图片、定义名称 | 🧪 | **Leg 1 已验（2026-09-15，独立复核）：6/6 保留**。两处表示变化：图片经 xlsx 往返后进 `shapes` 而非 `pictures`（用 `pictures.all()` 会误报丢失）；数据验证边界变公式字符串 `"=1"`。Leg 2（真实 Excel/WPS 另存后再导入）仍未测 |
 | A7 | 大文件导入（5–10 万行 xlsx） | 🧪 | **已测（2026-09-15）**：写入 10k/50k/100k 行 = 223ms/782ms/1409ms，`getRowCount` 与目标一致（无静默丢失），无超时无重试，未触碰 60s 预算。100k 行端到端：`status` 5.9s、`export xlsx` 6.9s（2.33MB）、`import` 6.2s（8.91MB）、**`screenshot` 19.0s**（clipped，282×2182）——截图是唯一异类，耗时随数据量而非图片大小增长，约 40 万行会触顶超时。写入档位的超时悬崖仍未知（100k 仅用掉 1.4s 工作耗时，离上限很远） |
 | A8 | 空单元格 / 稀疏区域写入 | ⚪ | 未测 |

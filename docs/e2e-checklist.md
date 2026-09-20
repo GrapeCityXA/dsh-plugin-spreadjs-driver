@@ -33,8 +33,15 @@ pnpm run ci
 
 各段覆盖：typecheck（tsc --noEmit）→ `verify:public-dependencies`（禁 file:/link:/git: 运行时依赖）
 → build（host bundle + worker）→ `test:worker`（信封/错误码/导入导出/pdf/png，23 步）
+→ `test:integrity`（**独立读字节**：zip 每个条目的 CRC-32/尺寸、CJK 字节级一致、公式的缓存值、
+数字格式、往返；PDF 的字体是否真的**嵌入**（子集前缀 + FontFile 流）而非仅具名；PNG 真实墨迹与
+IHDR 尺寸，14 步。reader 在 `test/lib/`，不 import `src/`、`lib/` 或任何 `@grapecity-software/*`）
 → `test:tool`（cordis 全链 + worktree + skill 注册，28 步）→ `verify:pack`（tarball 必备运行时文件）
 → `test:pack`（把 tarball 当安装抽进 node_modules、从 packed `lib/index.js` 引导 cordis、真跑 worker + `skills.list`）。
+
+> `test:worker` 对产物的校验是**魔数与长度**级的（xlsx 看 `PK`、pdf 看 `%PDF`、png 看 `PNG` 且
+> `>1000` 字节）；结构损坏、内容错误、空壳 PDF、空白帧都能穿过。**产物的字节级正确性由
+> `test:integrity` 负责**——它用与写方无共享代码的 reader 复读导出结果，这是两条互补的网，不是重复。
 
 ## 2. Agent 全链路 A · 工资表指令（建簿→公式→截图→导出）
 

@@ -1,10 +1,14 @@
 name: CI
 
 # Gate for task 7: typecheck → public-dependency verify → build → worker-smoke →
-# tool-smoke → pack-content verify → "install the tarball and boot it" smoke.
-# All headless (jsdom + node-canvas, no display). Ubuntu-latest ships DejaVu
-# fonts, which satisfy the PDF/PNG guards; no CJK font install is required for
-# gating (CJK glyph fidelity is verified on the dev machine / E2E checklist).
+# export-integrity → tool-smoke → live/client/confinement → pack-content verify →
+# "install the tarball and boot it" smoke.
+# Headless: the worker renders in a real browser it launches itself (no display).
+# Ubuntu-latest ships DejaVu fonts, which satisfy the PDF/PNG guards; no CJK font
+# install is required for gating (CJK glyph fidelity is verified on the dev
+# machine / E2E checklist). export-integrity asks the worker which font families
+# it registered and points the sheet at one of them before asserting that a font
+# file was really embedded, so the assertion holds on any host with a font.
 
 on:
   push:
