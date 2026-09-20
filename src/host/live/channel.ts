@@ -18,12 +18,19 @@
  * you named — are distinguished in the error code, because they need different
  * fixes.
  *
- * The connection service's own signature is declared structurally below rather
- * than imported: this bundle must not depend on another package's runtime module,
- * and the surface actually used is one method.
+ * The channel is mounted as a web-server route of our own, not through the
+ * connection service's `rpc.handle`. That method is unusable from a third-party
+ * plugin and silently produced a 405 for every poll in the field; the full story
+ * is at the top of `transport.ts`, which is where the wire protocol lives.
+ *
+ * The services this needs are declared structurally below rather than imported:
+ * this bundle must not depend on another package's runtime module, and the
+ * surfaces actually used are one method each.
  */
 import { randomUUID } from 'node:crypto'
+import type { IncomingMessage } from 'node:http'
 import { SjsError } from '../service/errors.ts'
+import { liveRoute, type LiveRoute, type RpcOutcome } from './transport.ts'
 import {
   LIVE_CHANNEL,
   LIVE_POLL,
@@ -48,19 +55,23 @@ const TAB_TTL_MS = 15_000
  */
 const MAX_QUEUED_JOBS = 32
 
-/** Carrier-neutral result the RPC handler must return. */
-type RpcOutcome =
-  | { readonly ok: true; readonly value: unknown }
-  | { readonly ok: false; readonly error: { readonly code: string; readonly message: string; readonly details: object } }
-
-/** The slice of the host connection service this channel uses. */
-interface LiveRpcHost {
-  rpc?: {
-    handle(
-      channel: string,
-      handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcOutcome>,
-    ): () => Promise<void>
+/** The host services this channel mounts on. */
+export interface LiveTransportHost {
+  /** The `webServer` service: where the route goes. */
+  webServer?: {
+    /** Register the route; the returned disposer is synchronous. */
+    register(route: LiveRoute): () => void
   }
+  /**
+   * DSH's own request check for a plugin-owned route — the Host/Origin fence,
+   * then the signed browser cookie — answering with the status to refuse the
+   * request with, or undefined to serve it.
+   *
+   * **Required, and checked at mount time.** Serving without it would let any
+   * local process drive the user's open workbook, so a host that cannot supply
+   * one does not get a route at all.
+   */
+  authenticate?: (request: IncomingMessage) => number | undefined
 }
 
 interface TrackedTab {
@@ -129,23 +140,79 @@ export interface LiveExecution {
 
 /** Routes work to browser tabs that hold a live SpreadJS workbook. */
 export class LiveChannel {
+  /**
+   * Whether the HTTP channel is actually mounted on this DSH, and why not when it
+   * is not. Tracked because "the channel never registered" and "registered but no
+   * browser has polled" look identical from the outside — both leave `tabs`
+   * empty — and they need completely different fixes. Reporting the first as
+   * `SJS_LIVE_NO_CLIENT` sends the reader off to check a browser that is working
+   * fine.
+   */
+  private transport: { ok: true } | { ok: false; reason: string } = {
+    ok: false,
+    reason: 'the channel has not been registered yet',
+  }
+
   private readonly tabs = new Map<string, TrackedTab>()
   private readonly queue: LiveJob[] = []
   private readonly pending = new Map<string, PendingJob>()
 
   /**
-   * Register the channel on the host connection service.
-   * @param connection - the `connection` service, or anything else when the
-   *                     running composition has none (the host half tolerates a
-   *                     profile without a web server by never calling this).
-   * @returns a disposer that removes the channel.
+   * Mount the channel as a web-server route.
+   *
+   * @param host - the `webServer` service and DSH's request check, or anything
+   *               else when the running composition has neither (the host half
+   *               tolerates a profile without a web server by never calling
+   *               this).
+   * @returns a disposer that removes the route.
+   * @throws {SjsError} `SJS_LIVE_NO_TRANSPORT` when there is nothing to mount
+   *         on: no route registry, no authentication check, or a registration
+   *         the web server refused. The reason is kept so a later call can say
+   *         why instead of blaming a browser.
    */
-  register(connection: unknown): () => Promise<void> {
-    const host = connection as LiveRpcHost | undefined
-    if (typeof host?.rpc?.handle !== 'function') {
-      throw new SjsError('the connection service exposes no rpc.handle', 'SJS_LIVE_NO_TRANSPORT')
+  register(host: LiveTransportHost | undefined): () => void {
+    try {
+      if (typeof host?.webServer?.register !== 'function') {
+        // Name the shape actually seen: "no webServer" alone would send the
+        // reader looking for a typo instead of at what the service really is.
+        const keys = typeof host === 'object' && host !== null
+          ? Object.keys(host).join(', ')
+          : String(host)
+        throw new SjsError(
+          `the host exposes no web server to register a route on (host keys: ${keys})`,
+          'SJS_LIVE_NO_TRANSPORT',
+        )
+      }
+      if (typeof host.authenticate !== 'function') {
+        throw new SjsError(
+          'the host exposes no request authentication, and a channel served without it '
+          + "would let any local process drive the user's open workbook",
+          'SJS_LIVE_NO_TRANSPORT',
+        )
+      }
+      const unregister = host.webServer.register(liveRoute({
+        path: LIVE_CHANNEL,
+        authenticate: host.authenticate,
+        dispatch: (endpoint, payload) => this.dispatch(endpoint, payload),
+      }))
+      // A registration that returned no disposer cannot be undone, so it is a
+      // failed mount rather than a leak nobody will notice.
+      if (typeof unregister !== 'function') {
+        throw new SjsError('the web server returned no way to unregister the route', 'SJS_LIVE_NO_TRANSPORT')
+      }
+      this.transport = { ok: true }
+      return unregister
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      this.transport = { ok: false, reason }
+      // Every way this can fail means the same thing to a caller, so it leaves
+      // as the same error. A web server that refused the route reports its own
+      // reason (a duplicate registration, say) and keeps the original as the
+      // cause, so nothing about it is lost to the wrap.
+      throw error instanceof SjsError
+        ? error
+        : new SjsError(`the live channel could not be mounted: ${reason}`, 'SJS_LIVE_NO_TRANSPORT', { cause: error })
     }
-    return host.rpc.handle(LIVE_CHANNEL, (endpoint, payload) => Promise.resolve(this.dispatch(endpoint, payload)))
   }
 
   /** Workbook ids currently offered by a live tab, in no particular order. */
@@ -241,6 +308,14 @@ export class LiveChannel {
 
   /** Fail before queueing when no tab could possibly take the job. */
   private assertServable(target: string | undefined): void {
+    // Checked first: an unregistered channel makes every later symptom
+    // ("nobody is polling") a consequence of this one, not a separate finding.
+    if (!this.transport.ok) {
+      throw new SjsError(
+        `The live channel could not be mounted on this DSH, so no browser can reach it: ${this.transport.reason}`,
+        'SJS_LIVE_NO_TRANSPORT',
+      )
+    }
     const live = this.liveTabs()
     if (live.length === 0) {
       throw new SjsError(
