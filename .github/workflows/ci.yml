@@ -9,6 +9,13 @@ name: CI
 # machine / E2E checklist). export-integrity asks the worker which font families
 # it registered and points the sheet at one of them before asserting that a font
 # file was really embedded, so the assertion holds on any host with a font.
+#
+# The chain runs UNDER scripts/audit-browsers.mjs, which samples live engine
+# browsers for the whole run and fails if any outlives it. The engine keeps a
+# browser alive for as long as it serves, so an engine that never shuts down is
+# a browser that never shuts down — a real window in the system window list, 15
+# processes and 150-250 MB each — and that failure is only visible ACROSS test
+# processes, which is why it is watched from outside them.
 
 on:
   push:
@@ -41,4 +48,4 @@ jobs:
         # (allowBuilds), which is committed with the repo.
 
       - name: Full verification chain
-        run: pnpm run ci
+        run: node scripts/audit-browsers.mjs --max-concurrent=4 -- pnpm run ci
