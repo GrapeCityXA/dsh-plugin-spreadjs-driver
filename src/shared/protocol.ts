@@ -1,7 +1,7 @@
-/** JSON values accepted across the model tool boundary and the worker process. */
+/** JSON values accepted across the model tool boundary and the engine process. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
-/** Workbook operations currently accepted by the one-shot sjs worker. */
+/** Workbook operations currently accepted by the sjs engine. */
 export type SjsOperation =
   | 'new'
   | 'status'
@@ -35,10 +35,46 @@ export type SjsWorkerRequest =
       readonly format: 'png' | 'pdf'
     }
 
-/** Process response envelope emitted exactly once on stdout. */
+/** Process response envelope: what one operation produced. */
 export type SjsWorkerEnvelope =
   | { readonly ok: true; readonly result: JsonValue }
   | { readonly ok: false; readonly error: { readonly code: string; readonly message: string } }
+
+/**
+ * Framing over stdio: newline-delimited JSON, one line per message, each reply
+ * carrying the id of the request it answers.
+ *
+ * The engine process lives for many operations, so "everything on stdin is one
+ * request and stdout yields one envelope" no longer holds. NDJSON is the framing
+ * because it needs no dependency, survives a stream that is split mid-message
+ * (a pipe chunk boundary has nothing to do with a message boundary), and matches
+ * the diagnostics rule the worker already followed: stdout carries message
+ * lines and nothing else, stderr carries everything a human reads.
+ *
+ * The alternative — length-prefixed frames — buys nothing here (no binary
+ * payload crosses this pipe: bytes move over loopback HTTP) and would make the
+ * stream unreadable in a terminal during a debugging session.
+ */
+export interface SjsEngineFrame {
+  /** Correlation id minted by the host; the reply carries the same id back. */
+  readonly id: number
+  readonly request: SjsWorkerRequest
+}
+
+/**
+ * One reply line. `id` is the id of the request it answers, or `null` for a line
+ * the engine could not attribute to any request (an unparseable frame). A null-id
+ * reply is a diagnostic only: the host never sends a frame it cannot parse.
+ */
+export type SjsEngineEnvelope = { readonly id: number | null } & SjsWorkerEnvelope
+
+/** Validate the untrusted engine response before trusting it. */
+export function parseSjsEngineEnvelope(value: unknown): SjsEngineEnvelope | null {
+  if (!isRecord(value)) return null
+  const id = value.id
+  if (id !== null && (typeof id !== 'number' || !Number.isSafeInteger(id))) return null
+  return parseSjsWorkerEnvelope(value) as SjsEngineEnvelope | null
+}
 
 /** Validate the untrusted worker response before trusting it. */
 export function parseSjsWorkerEnvelope(value: unknown): SjsWorkerEnvelope | null {

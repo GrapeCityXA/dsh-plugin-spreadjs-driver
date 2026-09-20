@@ -10,11 +10,18 @@
  * In a real browser those classes do not exist, and the pixels are the engine's
  * own.
  *
- * The process model is deliberately unchanged from the jsdom worker: ONE request
- * in, ONE envelope out, then the process exits and takes the browser with it.
- * That keeps `sjs_execute`'s isolation story ("a hostile script dies with its
- * process") exactly as it was. A persistent browser is a later stage; this one
- * only replaces what is inside the worker.
+ * Process model (stage 2): the browser is launched ONCE per engine process and
+ * serves every operation; each operation gets a NEW PAGE and that page is closed
+ * when the operation ends. Pages are the isolation boundary: a fresh page means
+ * fresh SpreadJS prototypes, so the guards this runtime installs on
+ * `Worksheet.prototype` (auto-grow, sheet-name validation) are installed once
+ * per page against a pristine prototype instead of being re-patched over an
+ * already-patched one — which is a real hazard, not a theoretical one.
+ *
+ * What the page costs per operation is the bundle load: ~13.4 MB of UMD builds.
+ * The browser's HTTP cache is what makes the second and later pages cheap (see
+ * server.ts: the package bundles are the one cacheable route), and the file
+ * server, the CDP connection and the browser process itself are all reused.
  *
  * Division of labour:
  *   Node  — path authorization, every byte of file IO, the browser process, CDP,
@@ -117,7 +124,7 @@ const EMPTY_HEIGHT = 418
 export interface RuntimeOptions {
   /** Browser executable from the host config; discovery runs when omitted. */
   readonly browserPath?: string
-  /** stderr sink for diagnostics (stdout carries the envelope and nothing else). */
+  /** stderr sink for diagnostics (stdout carries envelopes and nothing else). */
   readonly log?: (message: string) => void
 }
 
@@ -189,10 +196,29 @@ function bundleFiles(): Record<string, string> {
   return files
 }
 
-/** Boot the whole runtime: server, browser, page, bundles. */
+/** One operation's page plus the listeners that must be dropped with it. */
+interface PageSession {
+  readonly page: Page
+  dispose(): void
+}
+
+/** Where a page's boot time went (logged per operation; see openPage). */
+interface PageBootTiming {
+  readonly bundles: number
+  readonly documentMs: number
+  readonly runtimeMs: number
+  readonly bootMs: number
+}
+
+/**
+ * Boot the browser runtime: file server, browser process, CDP connection.
+ *
+ * The returned runtime opens and closes a page per operation — it holds no
+ * workbook state between calls, which is what keeps `sjs_execute`'s isolation
+ * story intact under a process that no longer dies between calls.
+ */
 export async function loadRuntime(options: RuntimeOptions = {}): Promise<BrowserRuntime> {
   const log = options.log ?? ((): void => undefined)
-  const startedAt = performance.now()
   const bundleMap = bundleFiles()
 
   let server: FileServer | undefined
@@ -208,23 +234,13 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
     const located = findBrowser(browserPath)
     log(`[sjs] browser: ${located.kind} at ${located.path}`)
 
+    const startedAt = performance.now()
     browser = await launchBrowser({ exe: located.path, headless: true, log })
     cdp = await CDP.connect(browser.wsUrl)
-    const page = await cdp.newPage('about:blank')
-    await page.send('Page.enable')
-    await page.send('Runtime.enable')
-    // deviceScaleFactor 1 keeps canvas backing-store pixels == CSS pixels, which
-    // is what makes the reported screenshot width comparable with the model's own
-    // column arithmetic.
-    await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: 1, mobile: false })
+    log(`[sjs] browser ready in ${(performance.now() - startedAt).toFixed(0)}ms`)
 
-    forwardPageDiagnostics(page, log)
-    const injected = await bootPage(page, server.origin, log)
-    // Measured AFTER the bundles are in: this is the cold-start cost of the whole
-    // runtime, which is what the operation timings have to be read against.
-    const pageReadyMs = performance.now() - startedAt
-    log(`[sjs] page ready in ${pageReadyMs.toFixed(0)}ms (${String(injected.bundles)} bundles loaded)`)
-
+    // Bound for the closures below: `cdp` stays optional for the failure path.
+    const client = cdp
     const origin = server.origin
     const registerBlob = server.registerBlob.bind(server)
     /**
@@ -235,7 +251,98 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
      */
     const hostUrl = (absolutePath: string): string => registerBlob(resolve(absolutePath))
 
-    const read = async <T,>(sourcePath: string, width = HOST_WIDTH, height = HOST_HEIGHT): Promise<{ bytes: number } & T> => {
+    /**
+     * Pages this engine currently has open.
+     *
+     * A page that is open is a page that is RENDERING — and in a browser, a
+     * page is a window. Because the engine keeps one browser alive for its whole
+     * life, a page that outlives its operation is a window that outlives it too
+     * (invisible in headless mode, but real: it shows up in the shell's window
+     * list and keeps a renderer process alive). The set below is what makes
+     * "exactly one page at a time, closed with its operation" an invariant that
+     * is checked rather than hoped for.
+     */
+    const openPages = new Set<Page>()
+
+    /** Close one page, retrying once: a page left open is a window left open. */
+    const closePage = async (page: Page): Promise<void> => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await page.close()
+          openPages.delete(page)
+          return
+        } catch (error) {
+          if (attempt === 2) {
+            log(`[sjs] could not close an operation page: ${errorMessage(error)}`)
+            return
+          }
+          await new Promise((resolve) => { setTimeout(resolve, 250) })
+        }
+      }
+    }
+
+    /** Close every page still open — the sweep that keeps a lost close from accumulating. */
+    const sweepPages = async (): Promise<void> => {
+      for (const page of [...openPages]) await closePage(page)
+    }
+
+    /** Open a page, load the bundles into it, and hand it back with its listeners. */
+    const openPage = async (): Promise<PageSession> => {
+      const page = await client.newPage('about:blank')
+      openPages.add(page)
+      try {
+        await page.send('Page.enable')
+        await page.send('Runtime.enable')
+        // deviceScaleFactor 1 keeps canvas backing-store pixels == CSS pixels, which
+        // is what makes the reported screenshot width comparable with the model's own
+        // column arithmetic.
+        await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: 1, mobile: false })
+        const detachDiagnostics = forwardPageDiagnostics(page, log)
+        const pageStartedAt = performance.now()
+        const injected = await bootPage(page, origin, log)
+        // The breakdown matters because this is the one step a persistent browser
+        // does not remove: the page still loads ~13.4 MB of SpreadJS per
+        // operation. `runtime` is the page's own loader, `boot` is where the nine
+        // UMD bundles are fetched (cache hits after the first pages) and
+        // evaluated.
+        log(
+          `[sjs] page ready in ${(performance.now() - pageStartedAt).toFixed(0)}ms ` +
+            `(document ${injected.documentMs.toFixed(0)}ms, runtime ${injected.runtimeMs.toFixed(0)}ms, boot ${injected.bootMs.toFixed(0)}ms, ${String(injected.bundles)} bundles)`,
+        )
+        return { page, dispose: detachDiagnostics }
+      } catch (error) {
+        // This page never became an operation, and nothing above will close it:
+        // a page that failed to boot must not be left loaded in the browser for
+        // the engine's lifetime.
+        await closePage(page)
+        throw error
+      }
+    }
+
+    /**
+     * Run one operation on a page of its own.
+     *
+     * The blob registry is cleared here, before the operation mints anything:
+     * a nonce authorizes one host-chosen file for the operation that asked for
+     * it. In a one-shot process that was implied by the process ending; here it
+     * has to be said, or the registry would grow for the engine's whole life and
+     * keep paths valid long after the host decided they were.
+     */
+    const withPage = async <T,>(operation: (page: Page) => Promise<T>): Promise<T> => {
+      server?.clearBlobs()
+      await sweepPages()
+      const session = await openPage()
+      try {
+        return await operation(session.page)
+      } finally {
+        session.dispose()
+        await closePage(session.page)
+      }
+    }
+
+    const summarize = async (page: Page): Promise<WorkbookSummary> => await callPage<WorkbookSummary>(page, '__H.summarize()')
+
+    const read = async <T,>(page: Page, sourcePath: string, width = HOST_WIDTH, height = HOST_HEIGHT): Promise<{ bytes: number } & T> => {
       const loaded = await callPage<{ bytes: number }>(
         page,
         `__H.loadWorkbook(${JSON.stringify(hostUrl(sourcePath))}, ${String(width)}, ${String(height)})`,
@@ -248,89 +355,104 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
 
     const runtime: BrowserRuntime = {
       async create(targetPath) {
-        const created = await callPage<{ bytes: number }>(
-          page,
-          `__H.createWorkbook(${JSON.stringify(hostUrl(targetPath))}, ${String(HOST_WIDTH)}, ${String(HOST_HEIGHT)})`,
-        )
-        return { bytes: created.bytes, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+        return await withPage(async (page) => {
+          const created = await callPage<{ bytes: number }>(
+            page,
+            `__H.createWorkbook(${JSON.stringify(hostUrl(targetPath))}, ${String(HOST_WIDTH)}, ${String(HOST_HEIGHT)})`,
+          )
+          return { bytes: created.bytes, ...share(await summarize(page)) }
+        })
       },
 
       async load(sourcePath) {
-        await read(sourcePath)
-        return share(await callPage<WorkbookSummary>(page, '__H.summarize()'))
+        return await withPage(async (page) => {
+          await read(page, sourcePath)
+          return share(await summarize(page))
+        })
       },
 
       async saveAs(targetPath) {
-        return await callPage<{ bytes: number }>(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`)
+        return await withPage(async (page) => await callPage<{ bytes: number }>(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`))
       },
 
       async importInto(sourcePath, targetPath, format) {
-        const imported = await callPage<{ bytes: number }>(
-          page,
-          `__H.importFile(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(resolve(sourcePath))}, ${JSON.stringify(format)})`,
-          'SJS_IMPORT_FAILED',
-        )
-        await callPage(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`)
-        return { bytes: imported.bytes, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+        return await withPage(async (page) => {
+          const imported = await callPage<{ bytes: number }>(
+            page,
+            `__H.importFile(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(resolve(sourcePath))}, ${JSON.stringify(format)})`,
+            'SJS_IMPORT_FAILED',
+          )
+          await callPage(page, `__H.persist(${JSON.stringify(hostUrl(targetPath))})`)
+          return { bytes: imported.bytes, ...share(await summarize(page)) }
+        })
       },
 
       async exportWorkbook(sourcePath, outputPath, format) {
-        await read(sourcePath)
-        const exported = await callPage<{ bytes: number; sheet?: string; usedRange?: unknown }>(
-          page,
-          `__H.exportFile(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(format)})`,
-          'SJS_EXPORT_FAILED',
-        )
-        const result: Record<string, unknown> = {
-          format,
-          file: outputPath,
-          bytes: exported.bytes,
-          ...(exported.sheet === undefined ? {} : { sheet: exported.sheet }),
-          ...(exported.usedRange === undefined ? {} : { usedRange: exported.usedRange }),
-        }
-        if (format === 'csv') return result
-        return { ...result, ...share(await callPage<WorkbookSummary>(page, '__H.summarize()')) }
+        return await withPage(async (page) => {
+          await read(page, sourcePath)
+          const exported = await callPage<{ bytes: number; sheet?: string; usedRange?: unknown }>(
+            page,
+            `__H.exportFile(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(format)})`,
+            'SJS_EXPORT_FAILED',
+          )
+          const result: Record<string, unknown> = {
+            format,
+            file: outputPath,
+            bytes: exported.bytes,
+            ...(exported.sheet === undefined ? {} : { sheet: exported.sheet }),
+            ...(exported.usedRange === undefined ? {} : { usedRange: exported.usedRange }),
+          }
+          if (format === 'csv') return result
+          return { ...result, ...share(await summarize(page)) }
+        })
       },
 
       async exportPdf(sourcePath, outputPath) {
-        await read(sourcePath)
-        return await callPage<PdfExportResult>(
-          page,
-          `__H.exportPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
-          'SJS_PDF_EXPORT_FAILED',
-        )
+        return await withPage(async (page) => {
+          await read(page, sourcePath)
+          return await callPage<PdfExportResult>(
+            page,
+            `__H.exportPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
+            'SJS_PDF_EXPORT_FAILED',
+          )
+        })
       },
 
       async screenshotPdf(sourcePath, outputPath) {
-        await read(sourcePath)
-        return await callPage<PdfExportResult>(
-          page,
-          `__H.screenshotPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
-          'SJS_PDF_EXPORT_FAILED',
-        )
+        return await withPage(async (page) => {
+          await read(page, sourcePath)
+          return await callPage<PdfExportResult>(
+            page,
+            `__H.screenshotPdf(${JSON.stringify(hostUrl(outputPath))}, ${JSON.stringify(pdfFontRequests(hostUrl))}, ${JSON.stringify(basenameWithoutExtension(outputPath))})`,
+            'SJS_PDF_EXPORT_FAILED',
+          )
+        })
       },
 
       async screenshotPng(sourcePath, outputPath) {
-        const shot = await callPage<PngShotResult>(
-          page,
-          `__H.screenshotPng(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(hostUrl(outputPath))}, ` +
-            `${String(MAX_SHOT_WIDTH)}, ${String(MAX_SHOT_HEIGHT)}, ${String(CONTENT_PAD)}, ${String(SCROLLBAR)}, ${String(EMPTY_WIDTH)}, ${String(EMPTY_HEIGHT)})`,
-          'SJS_FILE_READ_FAILED',
+        return await withPage(async (page) =>
+          await callPage<PngShotResult>(
+            page,
+            `__H.screenshotPng(${JSON.stringify(hostUrl(sourcePath))}, ${JSON.stringify(hostUrl(outputPath))}, ` +
+              `${String(MAX_SHOT_WIDTH)}, ${String(MAX_SHOT_HEIGHT)}, ${String(CONTENT_PAD)}, ${String(SCROLLBAR)}, ${String(EMPTY_WIDTH)}, ${String(EMPTY_HEIGHT)})`,
+            'SJS_FILE_READ_FAILED',
+          ),
         )
-        return shot
       },
 
       async execute(sourcePath, workspaceRoot, code) {
-        // The workspace root is set BEFORE any user code runs, and the confinement
-        // decision stays on this side of the boundary (server.authorizeWorkspacePath).
-        server?.setWorkspaceRoot(resolve(workspaceRoot))
-        await read(sourcePath)
-        const outcome = await callPage<{ json: string }>(
-          page,
-          `__H.runCode(${JSON.stringify(code)}, ${JSON.stringify(hostUrl(sourcePath))})`,
-          'SJS_SCRIPT_ERROR',
-        )
-        return JSON.parse(outcome.json) as unknown
+        return await withPage(async (page) => {
+          // The workspace root is set BEFORE any user code runs, and the confinement
+          // decision stays on this side of the boundary (server.authorizeWorkspacePath).
+          server?.setWorkspaceRoot(resolve(workspaceRoot))
+          await read(page, sourcePath)
+          const outcome = await callPage<{ json: string }>(
+            page,
+            `__H.runCode(${JSON.stringify(code)}, ${JSON.stringify(hostUrl(sourcePath))})`,
+            'SJS_SCRIPT_ERROR',
+          )
+          return JSON.parse(outcome.json) as unknown
+        })
       },
 
       async close() {
@@ -340,8 +462,9 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
     }
     return runtime
   } catch (error) {
-    // Never leak a half-started browser or server: the one-shot process is about
-    // to exit, and an orphaned browser profile dir would outlive it.
+    // Never leak a half-started browser or server, even though the engine now
+    // outlives this call: a failed boot must leave nothing behind for the next
+    // request to trip over.
     await cdp?.send('Browser.close').catch(() => undefined)
     cdp?.dispose()
     await browser?.close().catch(() => undefined)
@@ -358,6 +481,12 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
  * Discovery and the empty-set guard stay Node-side (see fonts.ts): `savePDF`
  * embeds only registered fonts, and an unregistered CJK cell silently produces a
  * hollow PDF, so this list must never be empty.
+ *
+ * Registration itself is per PAGE (SpreadJS's font manager lives in the page),
+ * so a new page per operation re-registers every font: this list is built per
+ * operation and the ~136 font files are re-fetched for each PDF export. The
+ * browser's HTTP cache makes the transfer cheap after the first one, but the
+ * parse/registration work is paid again — see docs/design-real-browser-runtime.md.
  */
 function pdfFontRequests(hostUrl: (path: string) => string): { family: string; url: string; fallback?: boolean }[] {
   const fonts: readonly PdfFontFile[] = discoverPdfFonts()
@@ -380,21 +509,27 @@ function pdfFontRequests(hostUrl: (path: string) => string): { family: string; u
 /**
  * Navigate and load the bundles, retrying the whole navigation when it fails.
  *
- * A headless browser occasionally commits the target before its subresource
- * pipeline is ready, and the bundle `<script>` tags then fail with a network
- * error even though the origin is up. Re-navigating is the fix (the same lesson
- * the spike's harness learned); giving up would fail an operation for a timing
- * accident.
+ * A page occasionally commits the target before its subresource pipeline is
+ * ready, and the bundle `<script>` tags then fail with a network error even
+ * though the origin is up. Re-navigating is the fix (the same lesson the spike's
+ * harness learned); giving up would fail an operation for a timing accident.
  */
-async function bootPage(page: Page, origin: string, log: (message: string) => void): Promise<{ bundles: number }> {
+async function bootPage(page: Page, origin: string, log: (message: string) => void): Promise<PageBootTiming> {
   let lastError: unknown
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      let at = performance.now()
       await page.goto(`${origin}/`)
+      const documentMs = performance.now() - at
+      at = performance.now()
       // The document's own loader promise: it resolves once runtime.js has run,
       // and rejects when the page gave up on fetching it.
       await page.evaluate('window.__runtimeLoaded')
-      return await callPage<{ bundles: number }>(page, '__H.boot()')
+      const runtimeMs = performance.now() - at
+      at = performance.now()
+      const booted = await callPage<{ bundles: number }>(page, '__H.boot()')
+      const bootMs = performance.now() - at
+      return { bundles: booted.bundles, documentMs, runtimeMs, bootMs }
     } catch (error) {
       lastError = error
       log(`[sjs] page boot attempt ${String(attempt)} failed: ${errorMessage(error)} :: ${await pageState(page)}`)
@@ -443,10 +578,12 @@ async function callPage<T>(page: Page, expression: string, fallbackCode = 'SJS_W
  * Forward page console output and uncaught errors to stderr.
  *
  * This is what keeps `console.log` inside `sjs_execute` code visible at all, and
- * it is the only channel: stdout carries the envelope and must stay clean.
+ * it is the only channel: stdout carries envelopes and must stay clean. Returns
+ * the unsubscribe: the CDP listener set is shared by every page of the engine's
+ * life, so a page that is closed must take its listeners with it.
  */
-function forwardPageDiagnostics(page: Page, log: (message: string) => void): void {
-  page.on('Runtime.consoleAPICalled', (params) => {
+function forwardPageDiagnostics(page: Page, log: (message: string) => void): () => void {
+  const offConsole = page.on('Runtime.consoleAPICalled', (params) => {
     const event = params as { type?: string; args?: { value?: unknown; description?: string; preview?: unknown }[] }
     const text = (event.args ?? [])
       .map((argument) => {
@@ -457,8 +594,12 @@ function forwardPageDiagnostics(page: Page, log: (message: string) => void): voi
       .join(' ')
     if (text.length > 0) log(text)
   })
-  page.on('Runtime.exceptionThrown', (params) => {
+  const offException = page.on('Runtime.exceptionThrown', (params) => {
     const event = params as { exceptionDetails?: { exception?: { description?: string }; text?: string } }
     log(`[sjs:page] ${event.exceptionDetails?.exception?.description ?? event.exceptionDetails?.text ?? 'uncaught page error'}`)
   })
+  return () => {
+    offConsole()
+    offException()
+  }
 }

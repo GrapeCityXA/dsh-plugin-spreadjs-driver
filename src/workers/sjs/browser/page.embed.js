@@ -410,6 +410,12 @@ async function registerPdfFonts(fonts) {
   if (manager === undefined || manager === null) {
     throw fail('SJS_PDF_UNAVAILABLE', 'PDF 功能不可用：未加载 spread-sheets-pdf（其必须先于 pdf 加载 print）。');
   }
+  // Timed and reported because this is, by measurement, the single most
+  // expensive step of a PDF operation — and the one step a persistent browser
+  // cannot make cheaper: the font manager belongs to THIS page, so every
+  // operation registers every font again. It reaches stderr through the page
+  // console forwarding, where the operation timings are read from.
+  const fontsStartedAt = Date.now();
   const registered = [];
   let fallbackBuffer = null;
   for (const font of fonts) {
@@ -436,6 +442,7 @@ async function registerPdfFonts(fonts) {
     );
   }
   if (fallbackBuffer !== null) manager.fallbackFont = function () { return fallbackBuffer; };
+  console.log('[sjs:page] registered ' + registered.length + ' PDF fonts in ' + (Date.now() - fontsStartedAt) + 'ms');
   return registered;
 }
 

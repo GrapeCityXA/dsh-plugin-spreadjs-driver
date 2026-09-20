@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SjsWorkerRequest } from '../../shared/protocol.ts'
-import { SjsWorker } from '../adapters/worker.ts'
+import { SjsEngine } from '../adapters/worker.ts'
 import type { ResolvedConfig } from '../config.ts'
 import { SjsService } from '../service/sjs-service.ts'
 import type {
@@ -23,27 +23,31 @@ import {
 import { assertAuthorizedPath } from '../service/workspace.ts'
 
 /**
- * Local Service Provider: owns the per-call worker process and re-authorizes
- * every request at the provider boundary before handing absolute paths to the
- * worker. Each call spawns a fresh one-shot process, so nothing stateful lives
- * here.
+ * Local Service Provider: owns the persistent engine process and re-authorizes
+ * every request at the provider boundary before handing absolute paths to it.
+ * Nothing stateful lives here — the engine keeps a browser but no workbook, so
+ * every call still starts by loading its file.
  */
 export class SjsProvider extends SjsService {
   private readonly config: ResolvedConfig
+  /** The engine process, started on the first operation and kept until dispose. */
+  private readonly engine: SjsEngine
   /**
    * Per-workbook operation chains.
    *
-   * Every operation is a whole read-modify-write inside its own one-shot
-   * process, so two operations on one workbook that overlap both read the same
-   * starting state and the later write silently discards the earlier one — with
-   * both reporting success. Calls that name the same workbook therefore run one
-   * after another, in arrival order; different workbooks still run in parallel.
+   * Every operation is a whole read-modify-write, so two operations on one
+   * workbook that overlap both read the same starting state and the later write
+   * silently discards the earlier one — with both reporting success. Calls that
+   * name the same workbook therefore run one after another, in arrival order.
+   * (The engine serves one request at a time regardless, so this chain is now an
+   * ordering guarantee rather than a concurrency one.)
    */
   private readonly chains = new Map<string, Promise<unknown>>()
   constructor(ctx: Context, config: ResolvedConfig) {
     super(ctx)
     this.config = config
-    ctx.effect(() => async () => this.dispose(), 'spreadjs: worker lifecycle')
+    this.engine = new SjsEngine(config.operationTimeoutMs, config.browserPath)
+    ctx.effect(() => async () => this.dispose(), 'spreadjs: engine lifecycle')
   }
 
   /** Run `task` after every operation already queued for `path` has settled. */
@@ -174,12 +178,12 @@ export class SjsProvider extends SjsService {
   }
 
   private async request(request: SjsWorkerRequest, signal?: AbortSignal) {
-    return new SjsWorker(this.config.operationTimeoutMs, this.config.browserPath).run(request, signal)
+    return await this.engine.run(request, signal)
   }
 
-  /** Dispose anything the provider owns (none today; workers are one-shot). */
+  /** Stop the engine process, and the browser it owns, with it. */
   async dispose(): Promise<void> {
-    // No-op placeholder: per-call workers are self-cleaning.
+    await this.engine.dispose()
   }
 }
 

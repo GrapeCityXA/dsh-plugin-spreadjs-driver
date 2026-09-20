@@ -1,11 +1,11 @@
 /**
- * Runtime validation of the untrusted JSON request the worker receives on
- * stdin. The host authorizes paths before sending, so this is defensive only —
- * but a misbehaving or corrupted request must fail fast with a clear message,
- * never crash mid-operation.
+ * Runtime validation of the untrusted JSON the engine receives on stdin. The
+ * host authorizes paths before sending, so this is defensive only — but a
+ * misbehaving or corrupted request must fail fast with a clear message, never
+ * crash mid-operation.
  */
 import { isRecord } from './protocol.ts'
-import type { SjsWorkerRequest } from './protocol.ts'
+import type { SjsEngineFrame, SjsWorkerRequest } from './protocol.ts'
 
 const OPS = new Set(['new', 'status', 'execute', 'import', 'export', 'screenshot'])
 const EXPORT_FORMATS = new Set(['xlsx', 'csv', 'ssjson', 'pdf'])
@@ -56,4 +56,25 @@ export function parseSjsWorkerRequest(value: unknown): SjsWorkerRequest {
       break
   }
   return value as SjsWorkerRequest
+}
+
+/**
+ * The id a frame claims, or null when the frame cannot be attributed.
+ *
+ * Read BEFORE the request body is validated, so a request the engine rejects
+ * still gets a correlatable reply rather than an anonymous one. It never throws:
+ * a caller uses it to decide the `id` of the error it is about to report.
+ */
+export function engineFrameId(value: unknown): number | null {
+  if (!isRecord(value)) return null
+  const id = value.id
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) return null
+  return id
+}
+
+/** Validate an untrusted `{id, request}` frame; throws on any mismatch. */
+export function parseSjsEngineFrame(value: unknown): SjsEngineFrame {
+  const id = engineFrameId(value)
+  if (id === null) throw new Error('frame "id" must be a non-negative integer')
+  return { id, request: parseSjsWorkerRequest((value as { request?: unknown }).request) }
 }

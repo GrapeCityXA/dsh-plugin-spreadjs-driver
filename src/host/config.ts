@@ -2,7 +2,12 @@ import z from '@deepseek-ai/schemastery'
 
 /** Configuration accepted by the spreadjs plugin. */
 export interface Config {
-  /** Maximum lifetime of one one-shot sjs worker process (covers boot + operation). */
+  /**
+   * Maximum wall time for one SpreadJS operation. The engine process outlives
+   * any single call (it holds a warm browser), so this bounds the CALL, not a
+   * process: an operation that overruns it fails with `SJS_WORKER_TIMEOUT` and
+   * takes the engine's browser down with it, for the next call to restart.
+   */
   operationTimeoutMs?: number
   /** Register model-facing `sjs_*` tools. */
   tools?: boolean

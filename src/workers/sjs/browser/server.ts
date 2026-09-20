@@ -20,6 +20,13 @@
  *                  minted per file by Node, mapping to exactly one path. There
  *                  is no route anywhere that accepts a path from the page.
  *
+ *                  The registry is per PROCESS, and a process now serves many
+ *                  operations, so it is cleared at the start of every operation
+ *                  (`clearBlobs`): a nonce stays valid for exactly the operation
+ *                  that minted it. Without that it would grow for the engine's
+ *                  whole life — a PDF export alone mints ~136 of them, one per
+ *                  font file.
+ *
  *                  This replaced a per-process bearer token in `?k=`, which was
  *                  exploitable: the token sat in a URL the page itself fetched,
  *                  and sandboxed code could recover it with
@@ -61,6 +68,12 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 }
 
+/**
+ * Cache lifetime for the package bundles. `immutable` is honest: the files
+ * belong to an installed package and cannot change while this engine runs.
+ */
+const STATIC_CACHE = 'public, max-age=3600, immutable'
+
 export interface ServerOptions {
   /** In-memory documents: URL path → body. A path without an extension is HTML. */
   readonly documents: Record<string, string>
@@ -96,6 +109,13 @@ export interface FileServer {
    * @returns the absolute URL to fetch.
    */
   registerBlob(absolutePath: string): string
+  /**
+   * Drop every nonce previously minted, so the next operation starts with an
+   * empty registry. Called by the runtime before each operation (see the
+   * header): a nonce authorizes one file for the operation that asked for it
+   * and no longer.
+   */
+  clearBlobs(): void
   close(): Promise<void>
 }
 
@@ -138,13 +158,13 @@ export async function startFileServer(options: ServerOptions): Promise<FileServe
     })
   })
 
-  const respond = (response: import('node:http').ServerResponse, status: number, body: string | Buffer, contentType?: string): void => {
+  const respond = (response: import('node:http').ServerResponse, status: number, body: string | Buffer, contentType?: string, cacheControl = 'no-store'): void => {
     const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body)
     response.writeHead(status, {
       'content-type': contentType ?? 'text/plain; charset=utf-8',
       'content-length': buffer.length,
       'access-control-allow-origin': '*',
-      'cache-control': 'no-store',
+      'cache-control': cacheControl,
     })
     response.end(buffer)
   }
@@ -243,7 +263,11 @@ export async function startFileServer(options: ServerOptions): Promise<FileServe
     const file = options.files[path]
     if (file !== undefined) {
       try {
-        respond(response, 200, await readFile(file), MIME[extname(file)] ?? 'application/octet-stream')
+        // Cacheable, unlike every other route: these are the package's SpreadJS
+        // UMD bundles, fixed for the engine's lifetime, and they are re-fetched
+        // by every page. Serving them from the browser's cache is what makes the
+        // second and later operations cheap — see the header note on pages.
+        respond(response, 200, await readFile(file), MIME[extname(file)] ?? 'application/octet-stream', STATIC_CACHE)
       } catch (error) {
         respondFailure(response, new HttpFailure(404, 'SJS_FILE_READ_FAILED', `cannot read ${file}: ${errorMessage(error)}`))
       }
@@ -267,6 +291,13 @@ export async function startFileServer(options: ServerOptions): Promise<FileServe
       blobs.set(id, resolve(absolutePath))
       return `${origin}/blob/${id}`
     },
-    close: () => new Promise<void>((resolve) => { (server as Server).close(() => { resolve() }) }),
+    clearBlobs() { blobs.clear() },
+    close: () => new Promise<void>((resolve) => {
+      ;(server as Server).close(() => { resolve() })
+      // A keep-alive socket left by a browser that is closing anyway would
+      // otherwise hold `close` open — and an engine that hangs on its way out
+      // is an engine whose browser is not being closed.
+      ;(server as Server).closeAllConnections()
+    }),
   }
 }
