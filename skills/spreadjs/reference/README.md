@@ -1,8 +1,10 @@
 # SpreadJS API Documentation
 
+> **This bundle ships one doc set, and its folder is not named after the engine version.** The tree here is `V19.0 API文档/{classes,enums,interfaces,modules}/`. The `v<version>/` layout described below is how this reference is distributed upstream — there is exactly one folder here and it carries that name. Every instruction below still applies; substitute `V19.0 API文档` for the `v19.1/` in the examples. (`V19.0` names the documentation set, not the engine: the installed SpreadJS reports 19.1.4.)
+
 Complete SpreadJS API reference as plain-text Markdown, one directory per version. Written to be read by AI coding agents: everything needed to locate and parse a symbol is described below.
 
-**English** | [中文](README.zh.md)
+**English** (this bundle ships no Chinese README; the `README.zh.md` link the upstream copy carries would be a dead end here)
 
 ---
 

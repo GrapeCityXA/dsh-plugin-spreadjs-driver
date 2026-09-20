@@ -347,38 +347,89 @@ official API reference ships with this skill, so checking a symbol is one local
 file read — do it *before* writing a call whose name, parameters, enum members or
 return shape you have not already confirmed in this session.
 
-**Where it is.** Under this skill's resource directory (given to you with this
-body) there is a `reference/<version>/` tree holding the whole reference as
-markdown, split exactly the way the docs site is:
+### Where it is — and the mistake that costs the most calls
+
+Under this skill's resource directory (given to you with this body) there is a
+`reference/<doc set>/` tree holding the whole reference as markdown, split exactly
+the way the docs site is:
 
 ```
-reference/<version>/classes/     one file per class      <Full.Name>.md
-reference/<version>/enums/       one file per enum       <Full.Name>.md
-reference/<version>/modules/     one file per namespace  <Full.Name>.md
-reference/<version>/interfaces/  …plus designer/, excelio/, collaboration/
+reference/<doc set>/classes/     one file per class      <Full.Name>.md
+reference/<doc set>/enums/       one file per enum       <Full.Name>.md
+reference/<doc set>/modules/     one file per namespace  <Full.Name>.md
+reference/<doc set>/interfaces/  …plus designer/, excelio/, collaboration/
 ```
 
-**The file name is the symbol's full name**, so you do not need to search — glob
-for it. **Do not build the path by hand**: the `<version>` folder names the *doc
-set*, not the engine, and the two differ (the docs here are `V19.0 API文档` while
-the installed engine reports 19.1.4) — a path assembled from the engine's version
-simply will not resolve. Glob for the file name and let the version folder be
-whatever it is. The reference base is available to your file tools; for example:
+**Anchor every search at that directory.** A glob with no `path` searches the
+session working directory — the folder holding the user's spreadsheet, which does
+not contain the reference — and returns nothing while looking perfectly correct:
 
 ```
-glob  pattern "**/GC.Spread.Sheets.Charts.ChartCollection.md"
-      → classes/GC.Spread.Sheets.Charts.ChartCollection.md
-        (add, all, get, remove, zIndex…)
-glob  pattern "**/GC.Spread.Sheets.AutoFitType.md"
-      → enums/…        (cell, cellWithHeader)
-glob  pattern "**/GC.Spread.Sheets.Commands.md"
-      → modules/…      (autoFitColumn, autoFitRow…)
+✗  glob "**/GC.Spread.Sheets.Charts.ChartType.md"
+   → searches the workspace. Finds nothing. The file is right there.
+
+✓  glob "**/GC.Spread.Sheets.Charts.ChartType.md", path "<skill dir>/reference"
+   → enums/GC.Spread.Sheets.Charts.ChartType.md
+```
+
+**Do not build the path from the engine version.** The `<doc set>` folder names
+the *documentation set*, not the engine, and the two differ here (the folder is
+`V19.0 API文档` while the installed engine reports 19.1.4) — a path assembled from
+the engine's version will not resolve. Let the folder be whatever it is.
+
+### Finding something you cannot name: follow the links
+
+**You usually do not know what the symbol is called, and you do not need to.** The
+reference is a hyperlinked graph generated from the same source as the docs site:
+every type reference in it is a markdown link. Start from an object you already
+hold and walk it.
+
+`sheet.charts` is the worked example — the route from "I want a pie chart" to
+`ChartType.pie`, with no guessing at any step:
+
+1. **`Worksheet`'s file.** `sheet` is a `Worksheet`, so that file documents it.
+   Near the top is a member list, each entry linked to an anchor in the same file.
+2. **The `charts` member.** It states what it returns *and links it*:
+   `• charts: [ChartCollection](GC.Spread.Sheets.Charts.ChartCollection.md)` — and
+   it carries a **runnable example** that already calls `charts.add(…)` with a
+   `ChartType` argument.
+3. **`ChartCollection`'s file, member `add`.** A signature, an example, then a
+   **Parameters table whose Type column is linked** —
+   `chartType | [ChartType](../enums/GC.Spread.Sheets.Charts.ChartType.md)` — and a
+   **Returns** line linking the result type.
+4. **`ChartType`'s file** lists every member, `pie` among them.
+
+Four reads, and the same route reaches any symbol in the API. That is why no
+"cheat sheet of common enums" belongs in this skill: such a list is a copy that
+goes stale and is never complete, whereas these links cannot drift from the source
+they are generated from.
+
+The link shapes you will meet, so you know what you are following:
+
+```
+[add](GC.….ChartCollection.md#add)                     a member anchor, same file
+[`Chart`](GC.….Chart.md)                                a class doc, same directory
+[`ChartType`](../enums/GC.….ChartType.md)               an enum doc, sibling directory
+[`ColorScheme`](../modules/GC.….Charts.md#colorscheme)  an enum inside a module doc
+```
+
+**If you catch yourself grepping for a name you invented, stop and walk the links
+instead.** A single `grep` for a guessed identifier costs more calls than reading
+two linked files, because a miss teaches you nothing.
+
+### When you already know the name
+
+The file name is the symbol's full name, so glob for it — anchored as above:
+
+```
+glob "**/GC.Spread.Sheets.AutoFitType.md", path "<skill dir>/reference"  → enums/
+glob "**/GC.Spread.Sheets.Commands.md",    path "<skill dir>/reference"  → modules/
 ```
 
 Sheet-level members live on the `Worksheet` file, workbook-level ones on
 `Workbook` — that is where `getText`, `setArray`, `frozenRowCount`, `printInfo`
 and friends are documented. **Some files are large** (the `Worksheet` one is
-~150 KB): grep inside the file for the method name rather than reading the whole
+~150 KB): grep inside the file for the member name rather than reading the whole
 thing.
 
 **If the reference file is missing or silent**, the engine's own TypeScript
