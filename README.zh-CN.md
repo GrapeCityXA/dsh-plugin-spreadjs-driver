@@ -8,10 +8,12 @@
 
 ## 环境要求
 
-- **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.1-rc.2` 或 `0.1.2-rc.1`）。
+- **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.5-rc.2`）。
 - **宿主机需装有 Microsoft Edge 或 Google Chrome**。引擎运行在真实浏览器进程中（插件不自带浏览器内核，也不会弹出任何界面）。两者都在时优先用 Edge；可用插件配置 `browserPath` 指定具体可执行文件。都找不到时报 `SJS_BROWSER_UNAVAILABLE`，并在消息里列出探测过的路径。
 - 需要一个可写的临时目录，用于浏览器的一次性 profile。
 - `.pdf` 导出里若要保留中文，宿主机上至少要有可发现的支持 CJK 的 `.ttf`/`.otf` 字体（默认自动扫描系统字体目录；可通过环境变量 `GC_SJS_PDF_FONT_DIRS` 追加目录——不支持 `.ttc`）。`png` 截图不需要额外字体：浏览器自带真实字体。
+
+**关于 DSH 版本区间。** `dsh.engines.dsh` 与各 `@deepseek-ai/*` peer 区间写的是精确版本 `0.1.5-rc.2`——既不是 caret，也不是拉长的列表。DSH 尚未 1.0，rc 之间就会有不兼容改动，所以这个插件能诚实声明的只有 CI 真跑过的那一个版本。对预发布版加 caret 等于默默承诺下一个 rc 也兼容；写 `>=` 则等于承诺永远兼容。将来 DSH 发新版、且在本地 CI 跑通之后，这个区间才会被显式抬到那个版本——一次一个，逐版本推进。
 
 ## 安装
 

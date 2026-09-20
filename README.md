@@ -8,10 +8,18 @@ English · [简体中文](README.zh-CN.md)
 
 ## Requirements
 
-- **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.1-rc.2` or `0.1.2-rc.1`).
+- **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.5-rc.2`).
 - **Microsoft Edge or Google Chrome installed.** The engine runs in a real browser process (no browser binary ships with the plugin, and no browser UI is ever shown). Edge is preferred when both exist; set the `browserPath` plugin option to point at a specific executable. Nothing found → `SJS_BROWSER_UNAVAILABLE`, naming the paths that were probed.
 - A writable temp directory for the browser's throwaway profile.
 - For `.pdf` export containing CJK text, at least one CJK-capable `.ttf`/`.otf` font must be discoverable on the host (system font directories are scanned automatically; add others via the `GC_SJS_PDF_FONT_DIRS` environment variable — `.ttc` files are not supported). PNG screenshots need nothing extra: the browser has real fonts.
+
+**On the DSH version range.** `dsh.engines.dsh` and the `@deepseek-ai/*` peer
+ranges name `0.1.5-rc.2` exactly — not a caret, and not a widened list. DSH is
+pre-1.0 and ships breaking changes between release candidates, so the only
+version this plugin can honestly claim is the one its CI actually ran against.
+A caret on a prerelease would silently promise compatibility with the next rc;
+a `>=` would promise it forever. When a new DSH is released and passes CI here,
+this range is raised to name it — deliberately, one version at a time.
 
 ## Install
 

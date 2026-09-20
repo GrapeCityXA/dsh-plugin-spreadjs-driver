@@ -15,7 +15,7 @@
 | 工具可枚举 | `sjs_new/import/export/status/execute/screenshot/worktree` | profile 会话 `/tools` 或 settings |
 | 工作区含 fixture | 两份真实形状 xlsx | `node scripts/make-fixtures.mjs` 后拷到会话 data/ |
 | 中文字体（PDF/PNG 可选） | 至少一个 .ttf/.otf 非 .ttc | 有 Windows 字体即满足；否则 `GC_SJS_PDF_FONT_DIRS` |
-| 版本基线 | DSH `0.1.2-rc.1`、Node ≥22.19 | `dsh --version`、`node -v` |
+| 版本基线 | DSH `0.1.5-rc.2`、Node ≥22.19 | `dsh --version`、`node -v` |
 
 fixture 数值基线（与 Excel/WPS 重算结果应一致）：
 - `工资表2026-05.xlsx` — 15 名员工，`实发工资 = 基本 + 绩效 − 社保`（公式），合计行 实发总额 **147,136**。
@@ -89,7 +89,7 @@ IHDR 尺寸，14 步。reader 在 `test/lib/`，不 import `src/`、`lib/` 或�
 起真实会话（`sjs` profile），查第一轮 system prompt / 会话工具说明中含 spreadjs skill 正文：工具地图 8 行、Recommended flow、「未知 API 先查证再写代码」。通过标准：模型无需外挂即能说出推荐流与错误码恢复表。
 
 ### ② sjs_screenshot png 回传 Agent 可见（read_image 模式）
-呈现面裁决：DSH `0.1.2-rc.1` **无 image/file 工具结果卡片**；Agent 可见图 = `ctx.attachments.saveImage` + image ContentBlock（官方 `read_image` 模式），需视觉路由。
+呈现面裁决：DSH `0.1.5-rc.2` 的 Client **不消费插件的 `presentCall`/`presentResult`**（`dsh-client-ui-tool` 的说明原文：卡片只从第一方原始事件字段派生，"Host `presentCall` and `presentResult` values never enter the Client"），因此插件无法自带 image/file 工具结果卡片；Agent 可见图 = `ctx.attachments.saveImage` + image ContentBlock（官方 `read_image` 模式），需视觉路由。
 - **已接入（task 7）**：`sjs_screenshot` png 在 ①当前路由声明 image 输入（经 `llm.resolveModelInfo`）②attachments 存储已挂 ③部署接受 `image/png` 时，自动把 png 存为 durable attachment 并附 image block；任一条件不满足则静默回退纯文本 + 文件路径（附 PDF 兜底建议）。**CI 已无头覆盖两条路径**（无 store → 文本回退；stub store + image 路由 → image block + saveImage 收到真实字节）。
 - **仍待人工**：在**真实视觉模型会话**让模型截图并"看"内容，确认 png 真被模型读到、无 store 的纯文本回退下模型能用 `read_image`/路径接续。客户端内联渲染归阶段 2。
 

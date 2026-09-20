@@ -16,7 +16,8 @@ the user never interacts with it.
 - Node.js ≥ 22.19 (ESM throughout; the worker uses `createRequire` for the CJS
   SpreadJS bundles and Node's global `fetch`/`WebSocket` for CDP — no npm
   dependency is added by the browser runtime).
-- DSH `0.1.1-rc.2 || 0.1.2-rc.1` (peer range, matching the current ecosystem).
+- DSH `0.1.5-rc.2` (peer range: the single version this plugin is built and
+  tested against — see the note on version claims in `README.md`).
 - **Microsoft Edge or Google Chrome installed on the machine.** Discovery probes
   the standard Windows paths for Edge then Chrome (plus the macOS/Linux
   equivalents); set the `browserPath` plugin option only when the browser lives
