@@ -112,7 +112,16 @@ export async function runAgainstProvider(
 ): Promise<LiveResult> {
   const workbook = provider.getWorkbook() as WorkbookLike | undefined
   if (workbook === undefined || workbook === null) {
-    return { ok: false, code: 'SJS_LIVE_NO_WORKBOOK', message: `provider ${provider.id} has no workbook open` }
+    // The designer panel exists but nothing is open in it. Say what to DO: this
+    // is a normal state (the panel is mounted before a file is picked), not a
+    // fault, and the caller can fix it. Naming the internal provider id here
+    // only cost the reader a turn.
+    return {
+      ok: false,
+      code: 'SJS_LIVE_NO_WORKBOOK',
+      message: 'The designer is connected but no spreadsheet is open in it. '
+        + 'Ask the user to open the file in the Web UI sidebar, or do this work against a file with sjs_execute.',
+    }
   }
 
   let fn: (...args: unknown[]) => unknown

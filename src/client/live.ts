@@ -120,8 +120,8 @@ async function runJob(
       ok: false,
       code: 'SJS_LIVE_NO_WORKBOOK',
       message: job.target === undefined
-        ? 'this tab has no workbook open'
-        : `this tab does not have the workbook ${JSON.stringify(job.target)} open`,
+        ? 'The designer is connected but no spreadsheet is open in it. Ask the user to open the file in the Web UI sidebar, or do this work against a file with sjs_execute.'
+        : `The designer is connected but does not have the workbook ${JSON.stringify(job.target)} open.`,
     }
   }
 
