@@ -34,6 +34,8 @@ export function liveExecuteTool(ctx: Context, channel: LiveChannel, config: Reso
       + 'session is running and the user is looking at the workbook. '
       + 'Code runs as an async function body with in scope: spread (the live Spread.Sheets.Workbook), '
       + 'workbook (alias), GC, sheet(name?) returning a worksheet, snapshot(), and console. '
+      + 'Unlike sjs_execute there is no io here: this code runs in the user\'s browser, not the engine, '
+      + 'so it has no file access — read files with sjs_execute and pass the values in. '
       + 'It may return a JSON-serializable value, which comes back to you. '
       + 'The edit stays in the browser: the user can see and undo it, and their file is NOT '
       + 'modified unless you explicitly ask for that with save: true. '
