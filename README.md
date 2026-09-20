@@ -4,7 +4,7 @@
 
 English · [简体中文](README.zh-CN.md)
 
-`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser that the plugin starts per operation; nobody sees it, and it exits with the operation.
+`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser the plugin keeps warm: it starts on your first spreadsheet operation, gives each operation a fresh page, and shuts itself down after a minute of idling. Nobody sees it.
 
 ## Requirements
 

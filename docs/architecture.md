@@ -36,19 +36,21 @@ src/host/            DSH host bundle (compiled → lib/index.js)
   config.ts          schema + resolveConfig (incl. browserPath)
   service/           SjsService abstract surface, SjsError codes, workspace
                      authorization, worktree registry
-  provider/          sjs-provider: spawns the worker per request
-  adapters/          worker.ts (spawn/timeout/abort/env whitelist), protocol typing
+  provider/          sjs-provider: owns the engine, authorizes every path
+  adapters/          worker.ts (start/frame/timeout/abort/env whitelist),
+                     protocol typing
   tools/             sjs_new/status/execute/import/export/screenshot/worktree
                      tool definitions + presentation + workspace guards
-src/workers/sjs/     worker (compiled → artifacts/sjs-worker.mjs)
+src/workers/sjs/     engine process (compiled → artifacts/sjs-worker.mjs)
+  entry.ts           the request loop: framing, idle shutdown, signals
   operations.ts      per-op implementations (paths, error codes, atomic writes)
   files.ts           Node-side file primitives (atomic write, copy)
   fonts.ts           system TTF discovery for PDF export
   browser/
-    runtime.ts       boots server + browser + page, exposes per-op Node facade
+    runtime.ts       boots server + browser once, page per operation
     cdp.ts           CDP client, browser launch/teardown, profile hygiene
     discovery.ts     find Edge/Chrome (config → Edge → Chrome)
-    server.ts        loopback HTTP: /ws (workspace-confined) and /fs (host-only)
+    server.ts        loopback HTTP: /ws (workspace-confined) and /blob (host-only)
     page.embed.js    page-side half: SpreadJS work, no filesystem access
   errors.ts          SjsWorkerError
 skills/spreadjs/     orchestration skill shipped to the runtime
@@ -58,41 +60,56 @@ docs/                this document
 Two esbuild entry points keep the host bundle free of heavy imports:
 `src/host/index.ts` → `lib/index.js` (DSH peers external, resolved from the
 plugin's own `node_modules` at runtime) and `src/workers/sjs/entry.ts` →
-`artifacts/sjs-worker.mjs`. The child process gets `NODE_PATH` set to the
+`artifacts/sjs-worker.mjs`. The engine process gets `NODE_PATH` set to the
 plugin's `node_modules` so dependency resolution survives pnpm's isolated
-layout. `page.embed.js` is inlined into the worker bundle as a string and served
+layout. `page.embed.js` is inlined into the engine bundle as a string and served
 to the browser verbatim (see "Engine runtime" below).
 
 ## Process model
 
-One request, one process. No daemon, no long-lived browser:
+One engine process per host session, one browser per engine, one page per
+operation:
 
-1. The provider spawns `node artifacts/sjs-worker.mjs` with stdio pipes.
-2. It writes a **single JSON request** on stdin and ends it.
-3. The worker emits **exactly one JSON envelope** on stdout
-   (`{ok:true,result}` | `{ok:false,error:{code,message}}`); logs go to stderr.
+1. The provider starts `node artifacts/sjs-worker.mjs` **on the first
+   operation** and keeps it for the session.
+2. Requests are newline-delimited JSON: `{id, request}` in,
+   `{id, ok, result|error}` out, one line each, matched by id. The engine serves
+   one request at a time, in arrival order.
+3. The engine boots the browser on its first request and opens **a new page per
+   operation**, closing it when the operation ends. Pages are the isolation
+   boundary: fresh SpreadJS prototypes for every operation, so the guards
+   installed on `Worksheet.prototype` are never re-patched over a used page.
 4. A hard `operationTimeoutMs` timer (default 60 s) plus the call's
-   `AbortSignal` kill the child; cleanup happens in `finally`. Timeout waits for
-   `close` (not `exit`) and reports `SJS_WORKER_TIMEOUT`.
+   `AbortSignal` KILL the engine, browser included, and report
+   `SJS_WORKER_TIMEOUT`; the next call starts a new engine. An engine that dies
+   on its own is reported as `SJS_ENGINE_DIED`.
+5. The engine shuts itself down after `SJS_ENGINE_IDLE_MS` (default 60 s) with
+   no requests, and immediately when its stdin closes — which is what happens
+   when the host exits.
 
-The browser is a child of that worker and dies with it: the entry point closes
-the runtime on the success AND failure paths, `Browser.close` is sent over CDP
-first, and the throwaway profile directory is deleted with a retry loop (a
-one-shot `rmSync` right after `Browser.close()` throws `EBUSY` on Windows and
-leaks ~26 MB per launch). Profiles orphaned by a host timeout kill are swept by
-the next launch once they are an hour old.
+The browser is a **direct child** of the engine, never launched through a shell
+or detached: that process chain is what makes the browser die with its starter
+in every mode (killed, detached, crashed), so no watchdog is needed. Shutdown
+is cooperative where it can be — `Browser.close` goes over CDP first, so the
+browser destroys its own window and deletes its throwaway profile directory
+with a retry loop (`rmSync` right after `Browser.close()` throws `EBUSY` on
+Windows and leaks ~26 MB per launch). Profiles orphaned by a hard kill are swept
+by the next launch once they are an hour old.
 
-The cost of this model is cold start: every operation pays a browser launch plus
-~14 MB of UMD bundle loading — measured ~2.5 s of page-ready work out of ~4.0 s
-per operation, i.e. most of the bill. It is deliberately kept for this stage
-because it is what makes `sjs_execute`'s isolation story true — a hostile script
-dies with its process. A persistent browser is a later stage; see
-`docs/design-real-browser-runtime.md`.
+What the persistent browser buys is the cold start: the previous model paid a
+browser launch plus ~14 MB of UMD loading on every operation (measured 3.3-3.9 s
+per operation, `docs/design-real-browser-runtime.md` §4). Now the browser is
+launched once, and each operation pays only its page: ~0.3 s once the browser's
+cache holds the bundles (the first two pages of an engine are slower — they are
+what fills the cache and V8's code cache). Measured: 3.3-3.9 s → 0.6-1.0 s for
+every operation except PDF, which stays ~2.8 s because font registration is
+per PAGE and is redone for every export.
 
-Because worker state is one-shot, all state lives on disk in the `.ssjson`
-file; a later call reloads it. Tool-level `file`/`output` paths are validated in
-the host (realpath, workspace containment, never-overwrite) before the worker
-sees them — the worker only ever receives already-authorized absolute paths.
+Because engine state is per operation, all workbook state lives on disk in the
+`.ssjson` file; a later call reloads it. Tool-level `file`/`output` paths are
+validated in the host (realpath, workspace containment, never-overwrite) before
+the engine sees them — the engine only ever receives already-authorized absolute
+paths.
 
 ## The .ssjson workspace
 
@@ -114,24 +131,33 @@ There is no `require`, `process`, or `fs` — the page has none of them.
 
 That sandbox is **hygiene, not a security boundary**; it was a `node:vm` context
 before the runtime swap and it is a page function now. The real protections are
-process isolation per call, host-side workspace whitelisting, and the hard
-timeout — plus, since the page is a browser context, the fact that the only file
-route it can reach on its own (`/ws`) re-authorizes every request against the
-session workspace. The host-authorized `/fs` route additionally requires a
-per-process capability token that is never stored in a page global. After
-execution the workbook is always persisted (before the return value is
-materialized), and the return value must be JSON-serializable (oversized →
-`SJS_RESULT_TOO_LARGE`).
+the OS process, host-side workspace whitelisting, the hard timeout, and the fact
+that the page has no filesystem: the only file route it can reach on its own
+(`/ws`) re-authorizes every request against the session workspace, and the
+host-authorized route (`/blob/<nonce>`) names no path — a nonce is minted per
+file per operation and the page can never point it at another one.
+
+Since stage 2 the page is also the **isolation boundary between operations**:
+each operation gets a fresh page, so nothing a script leaves behind (patched
+prototypes, workbook globals, timers) can reach the next operation. That is why
+a page is never reused to save milliseconds. After execution the workbook is
+always persisted (before the return value is materialized), and the return value
+must be JSON-serializable (oversized → `SJS_RESULT_TOO_LARGE`).
 
 ## Engine runtime
 
 ```
-worker (Node)                        page (Edge/Chrome, headless)
+engine (Node)                        page (Edge/Chrome, headless)
   ├─ local HTTP server  ←──────────→  fetch/script tags
-  │    /ws  workspace-confined          SpreadJS UMD bundles
-  │    /fs  host paths + capability     <div id="host"> + canvases
+  │    /ws      workspace-confined      SpreadJS UMD bundles
+  │    /blob/<nonce> host file          <div id="host"> + canvases
   └─ CDP client (global WebSocket) ──→ Runtime.evaluate / Page.navigate
 ```
+
+One browser per engine; one page, one operation. The bundles are the only
+cacheable route — every later page loads them out of the browser's HTTP cache
+(~1.4 s of the first page's boot, ~0.3 s after), which is what makes the second
+operation on an engine cheap.
 
 - **Bundles are served, not injected.** The page document pulls each
   `@grapecity-software` UMD build through a `<script src>` over loopback. Bundle
@@ -164,6 +190,13 @@ the page fetches and registers. When nothing can be registered, PDF
 export/snapshot throws `SJS_PDF_FONT_UNAVAILABLE` instead of emitting an empty
 shell.
 
+**The manager belongs to the page, so registration is per operation** — the one
+cost a persistent browser does not remove, and the reason PDF is the slowest
+operation by a wide margin: ~345 fonts, measured ~1.6 s of every ~2.8 s PDF
+operation, re-paid on each one (`[sjs:page] registered N PDF fonts in Xms` on
+stderr). Making it cheaper means a shared manager across pages, i.e. not a fresh
+page per operation — a trade this design does not make.
+
 ### PNG rasterization (sjs_screenshot format: png)
 
 The pixels are the engine's own: the sheet is rendered into a host in the page
@@ -195,6 +228,8 @@ imposed and per-cell font/weight variety survives in the image.
 
 Errors travel as `Error [CODE]: message` and route recovery. Host-side:
 `INVALID_FILE_PATH`, `SESSION_SCOPE_DENIED`, `FILE_PERMISSION_DENIED`,
-`INVALID_EXECUTION_SOURCE`, `CODE_FILE_READ_FAILED`. Worker-side: `SJS_*` codes
-covering script errors, missing sheets, IO, import/export/PDF/PNG backends, and
-oversized results. The `spreadjs` skill ships the full recovery table.
+`INVALID_EXECUTION_SOURCE`, `CODE_FILE_READ_FAILED`. Engine-side: `SJS_*` codes
+covering script errors, missing sheets, IO, import/export/PDF/PNG backends,
+oversized results, and the engine's own lifetime (`SJS_ENGINE_DIED` when the
+engine process goes away mid-call, `SJS_WORKER_TIMEOUT` when the call overruns
+`operationTimeoutMs`). The `spreadjs` skill ships the full recovery table.
