@@ -8,7 +8,7 @@ description: Create, inspect, edit, import, export and screenshot real Excel wor
 Do spreadsheet work with the bundled `sjs_*` tools — never hand-edit a binary
 .xlsx, and never substitute openpyxl / python-pptx / pandas / JS zip writers for
 SpreadJS. Complex or one-off operations go through `sjs_execute`, which runs
-real SpreadJS code in the engine (a hidden browser process per call).
+real SpreadJS code in the engine (a hidden browser the plugin keeps warm).
 
 **The file the user cares about is the `.xlsx`.** Beside it the engine keeps a
 `.ssjson` companion: its own lossless working format, meant to be read by the
@@ -36,9 +36,11 @@ ignore it; do not explain the format or make it part of the task.
   validation bounds come back as formula **strings** (`"=1"`, not `1`) — the rule
   still holds, the type just changed. Conditional formats, comments, defined names
   (`addCustomName`), merges, borders and number formats survive as they were.
-- Every tool call spawns a fresh, one-shot engine that loads the working file,
-  does the work, and saves it back. There is no live workbook handle between
-  calls — state lives only on disk, so re-read with `sjs_status` after writing.
+- Every tool call gets a **fresh engine page** that loads the working file, does
+  the work, and saves it back. The engine keeps a browser warm between calls so
+  they are ~4× faster, but the page is new every time: there is no live workbook
+  handle between calls, nothing you stored in a variable survives, and state
+  lives only on disk — re-read with `sjs_status` after writing.
 - **One tool is the exception: `sjs_live_execute`.** When the user has a workbook
   open in the SpreadJS designer (the sidebar of the DSH web UI), that tool edits
   *that* document **in the browser**, so the change is on screen the moment it
@@ -74,7 +76,7 @@ ignore it; do not explain the format or make it part of the task.
 | Start | `sjs_worktree` | `create` an isolated draft snapshot of a committed workbook; `list` open drafts. |
 | Inspect | `sjs_status` | List sheets, dimensions and used ranges of a workbook (metadata, not cell values). |
 | Write | `sjs_execute` | Run SpreadJS JavaScript against one workbook; the file is saved afterwards. |
-| Write | `sjs_live_execute` | Run SpreadJS JavaScript against the workbook **open in the user's designer**, in their browser. Same injected names as `sjs_execute`, but the edit appears on screen at once. **The file on disk is untouched** unless you pass `save: true` — do that only when the user asked for the file to be saved or overwritten. Needs a file **actually open** in the designer: a mounted panel with nothing open gives `SJS_LIVE_NO_WORKBOOK`, and no panel at all gives `SJS_LIVE_NO_CLIENT`. When the user says "preview this online", they usually have not opened it yet — tell them to open it from the sidebar rather than reaching for this tool. |
+| Write | `sjs_live_execute` | Run SpreadJS JavaScript against the workbook **open in the user's designer**, in their browser. Same injected names as `sjs_execute` **except `io`, which the live path does not have** — `io` is served by the engine's own loopback server, and this code runs in the user's browser instead of the engine, so there is no file access here. Read a file with `sjs_execute` and pass the values instead. The edit appears on screen at once. **The file on disk is untouched** unless you pass `save: true` — do that only when the user asked for the file to be saved or overwritten. Needs a file **actually open** in the designer: a mounted panel with nothing open gives `SJS_LIVE_NO_WORKBOOK`, and no panel at all gives `SJS_LIVE_NO_CLIENT`. When the user says "preview this online", they usually have not opened it yet — tell them to open it from the sidebar rather than reaching for this tool. |
 | Verify | `sjs_execute` | Return the cells you need, or call `snapshot()` for the sheet summary. |
 | Verify | `sjs_screenshot` | Render a visual snapshot: `png` (pixel render of the active sheet) or `pdf`. A `png` result reports `clipped: true` when the sheet exceeded the raster ceiling (2600×2200) and the image is a crop. |
 | Deliver | `sjs_export` | Produce the file the user opens: `.xlsx` (Excel), `.csv`, `.pdf`, or a `.ssjson` copy for another tool. Output never overwrites. |
@@ -474,6 +476,7 @@ not free text.
 | `SJS_PDF_UNAVAILABLE`, `SJS_PDF_FONT_UNAVAILABLE`, `SJS_PNG_RENDER_FAILED` | PDF backend missing, no embeddable font, or the raster failed | PDF export needs at least one CJK-capable `.ttf`/`.otf` on the host (`.ttc` unsupported). A `png` screenshot needs no font — the browser has them — so if PDF is unusable, fall back to `sjs_screenshot` `format: "png"`. |
 | `SJS_BROWSER_UNAVAILABLE`, `SJS_BROWSER_FAILED` | No Edge/Chrome on the machine, or the browser would not start | The engine runs in a real browser. Install Microsoft Edge or Google Chrome, or point the plugin's `browserPath` at one. Retry once before reporting — a launch is occasionally transient. |
 | `SJS_WORKER_TIMEOUT`, `SJS_WORKER_INVALID_RESPONSE`, `SJS_WORKER_FAILED`, `SJS_BAD_REQUEST` | Worker/transport failure | Retry once with simpler work; report if persistent. |
+| `SJS_ENGINE_DIED` | The engine (and its browser) went away **while this call was running** — a crash, or the host ran out of patience with an earlier overrun | The next call starts a fresh engine automatically, so just retry this one. If it repeats on a plain operation, the machine is likely out of memory. |
 | `SJS_LIVE_NO_CLIENT` | `sjs_live_execute` found no designer connected | Nobody has a designer panel in the DSH web UI. Either ask the user to open one, or do the work against a file with `sjs_execute` instead — do not retry the live tool in a loop. |
 | `SJS_LIVE_NO_WORKBOOK` | A designer is connected, but **no file is open in it** | This is a normal state, not a fault: the panel mounts before the user picks a file. **Ask the user to open the file** in the Web UI sidebar, then retry. Do NOT go reading the editor plugin's source to work out what is wrong — this error already says it. If the user does not want to open it, use `sjs_execute` on the file instead. |
 | `SJS_LIVE_UNKNOWN_TARGET` | A designer is connected but `target` names a workbook it does not hold | Omit `target` to use whichever designer is connected; the message lists the ids that *are* attached. |
