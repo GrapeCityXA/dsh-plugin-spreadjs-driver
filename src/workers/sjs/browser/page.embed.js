@@ -439,6 +439,7 @@ async function registerPdfFonts(fonts) {
   const fontsStartedAt = Date.now();
   const registered = [];
   let fallbackBuffer = null;
+  let fallbackFamily = null;
   for (const font of wanted) {
     let buffer;
     try {
@@ -453,7 +454,7 @@ async function registerPdfFonts(fonts) {
       // example registers both for exactly this reason.
       manager.registerFont(font.family, { normal: arrayBuffer, bold: arrayBuffer });
       registered.push(font.family);
-      if (font.fallback === true && fallbackBuffer === null) fallbackBuffer = arrayBuffer;
+      if (font.fallback === true && fallbackBuffer === null) { fallbackBuffer = arrayBuffer; fallbackFamily = font.family; }
     } catch (error) {
       /* one unusable font never blocks the export */
     }
@@ -466,8 +467,16 @@ async function registerPdfFonts(fonts) {
     );
   }
   if (fallbackBuffer !== null) manager.fallbackFont = function () { return fallbackBuffer; };
+  // Report BOTH the registration and the fallback: a document renders correctly
+  // only if the fallback is set, and an export that registered fonts but never
+  // set one produces boxes with a log line that looks perfectly healthy. The
+  // fallback family is named because it is, in practice, the font the whole PDF
+  // comes out in — our registered names are FILE stems (`simfang`), not family
+  // names (`仿宋`/`FangSong`), so a cell asking for a Chinese family never
+  // matches one and every Chinese cell resolves here.
   console.log('[sjs:page] registered ' + registered.length + ' PDF fonts in ' + (Date.now() - fontsStartedAt) + 'ms' +
-    ' (from ' + fonts.length + ' discovered, ' + (cjkOnly.length > 0 ? 'CJK-capable only' : 'no CJK font found') + ')');
+    ' (from ' + fonts.length + ' discovered, ' + (cjkOnly.length > 0 ? 'CJK-capable only' : 'no CJK font found') + ')' +
+    '; fallback=' + (fallbackFamily === null ? 'NONE — expect boxes' : fallbackFamily));
   return registered;
 }
 
