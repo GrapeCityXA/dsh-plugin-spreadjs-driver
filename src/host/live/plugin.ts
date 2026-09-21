@@ -27,6 +27,7 @@ import type { ResolvedConfig } from '../config.ts'
 import { withSjsErrorContent } from '../tools/presentation.ts'
 import { LiveChannel } from './channel.ts'
 import { liveExecuteTool } from './tool.ts'
+import { liveStatusTool } from './status-tool.ts'
 
 export const inject = ['tools']
 export const name = 'spreadjs-live'
@@ -74,4 +75,5 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
   })
 
   ctx.tools.register(withSjsErrorContent(liveExecuteTool(ctx, channel, config)))
+  ctx.tools.register(withSjsErrorContent(liveStatusTool(ctx, channel)))
 }

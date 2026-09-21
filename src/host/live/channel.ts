@@ -39,6 +39,7 @@ import {
   isLivePollRequest,
   type LiveJob,
   type LiveJobResult,
+  type LiveOfferedWorkbook,
 } from '../../shared/live.ts'
 
 /**
@@ -76,6 +77,8 @@ export interface LiveTransportHost {
 
 interface TrackedTab {
   readonly targets: readonly string[]
+  /** What the tab said each offered workbook is holding; may be empty. */
+  readonly workbooks: readonly LiveOfferedWorkbook[]
   readonly seenAt: number
 }
 
@@ -220,9 +223,41 @@ export class LiveChannel {
     return [...new Set(this.liveTabs().flatMap((tab) => [...tab.targets]))]
   }
 
+  /**
+   * Every workbook the connected tabs are offering, with whatever its owner said
+   * it holds — the answer `sjs_live_status` exists to give.
+   *
+   * An id a tab offers but did not describe still appears: routing WOULD hand it
+   * a job, so status must not pretend it is not there. That entry simply carries
+   * no file.
+   */
+  offered(): readonly LiveOfferedWorkbook[] {
+    const merged = new Map<string, LiveOfferedWorkbook>()
+    for (const tab of this.liveTabs()) {
+      for (const workbook of tab.workbooks) merged.set(workbook.id, workbook)
+    }
+    for (const id of this.attached()) {
+      if (!merged.has(id)) merged.set(id, { id })
+    }
+    return [...merged.values()]
+  }
+
   /** True when a tab has polled recently enough to be considered present. */
   get connected(): boolean {
     return this.liveTabs().length > 0
+  }
+
+  /**
+   * Whether a browser can reach this channel at all, and the reason when it
+   * cannot.
+   *
+   * Separate from {@link connected} on purpose: "no tab is polling" and "no tab
+   * could ever poll" look identical from a failed edit but call for opposite
+   * responses — wait for the user to open the designer, versus stop trying the
+   * live path in this profile altogether.
+   */
+  get reachability(): { readonly ok: true } | { readonly ok: false; readonly reason: string } {
+    return this.transport
   }
 
   /**
@@ -344,7 +379,11 @@ export class LiveChannel {
     if (!isLivePollRequest(payload)) {
       return failure('SJS_LIVE_BAD_REQUEST', 'a poll payload must be { tabId: string, targets: string[] }')
     }
-    this.tabs.set(payload.tabId, { targets: payload.targets, seenAt: Date.now() })
+    this.tabs.set(payload.tabId, {
+      targets: payload.targets,
+      workbooks: payload.workbooks ?? [],
+      seenAt: Date.now(),
+    })
 
     const index = this.queue.findIndex((job) => serves(payload.targets, job))
     if (index < 0) return { ok: true, value: null }

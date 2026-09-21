@@ -241,6 +241,50 @@ async function run() {
     assert(polled.ok === true && polled.value === null, `expected null, got ${JSON.stringify(polled)}`)
   })()
 
+  await step('status can name the open file without running a job', async () => {
+    const host = fakeHost()
+    const channel = new LiveChannel()
+    channel.register(host)
+    await host.call('poll', {
+      tabId: 't1',
+      targets: ['designer'],
+      workbooks: [{ id: 'designer', file: 'C:/work/q2.xlsx' }],
+    })
+    const offered = channel.offered()
+    assert(offered.length === 1, `expected one workbook, got ${JSON.stringify(offered)}`)
+    assert(offered[0].id === 'designer', `wrong id: ${JSON.stringify(offered)}`)
+    assert(
+      offered[0].file === 'C:/work/q2.xlsx',
+      `the open file was not carried through: ${JSON.stringify(offered)}`,
+    )
+  })()
+
+  await step('an id that is offered but undescribed still shows up, without a file', async () => {
+    // Routing WOULD hand this id a job, so status must not hide it — an older or
+    // other owner that does not report files still counts as offered.
+    const host = fakeHost()
+    const channel = new LiveChannel()
+    channel.register(host)
+    await host.call('poll', { tabId: 't1', targets: ['designer', 'plain'] })
+    const offered = channel.offered()
+    assert(offered.length === 2, `expected both ids, got ${JSON.stringify(offered)}`)
+    const plain = offered.find((entry) => entry.id === 'plain')
+    assert(plain !== undefined, `the undescribed id vanished: ${JSON.stringify(offered)}`)
+    assert(plain.file === undefined, `an undescribed id must not invent a file: ${JSON.stringify(plain)}`)
+  })()
+
+  await step('a poll carrying a malformed workbook entry is refused', async () => {
+    const host = fakeHost()
+    new LiveChannel().register(host)
+    const bad = await host.call('poll', {
+      tabId: 't1',
+      targets: ['designer'],
+      workbooks: [{ file: 'C:/work/q2.xlsx' }],
+    })
+    assert(bad.ok === false, `a workbook entry without an id must be rejected: ${JSON.stringify(bad)}`)
+    assert(bad.error.code === 'SJS_LIVE_BAD_REQUEST', `wrong code: ${JSON.stringify(bad)}`)
+  })()
+
   await step('a targeted job goes to the tab that holds it, not to the first tab to ask', async () => {
     const host = fakeHost()
     const channel = new LiveChannel()

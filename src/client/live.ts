@@ -167,15 +167,24 @@ export function startLiveChannel(
 
   void (async () => {
     while (!controller.signal.aborted) {
-      const targets = providers().map((provider) => provider.id)
+      const offered = providers()
+      const targets = offered.map((provider) => provider.id)
       if (targets.length === 0) {
         await sleep(IDLE_DELAY_MS, controller.signal)
         continue
       }
 
+      // Sent alongside `targets`, which is still what routing reads. This is how
+      // `sjs_live_status` can answer "which file does the designer have open"
+      // without a round trip — see LivePollRequest.workbooks.
+      const workbooks = offered.map((provider) => {
+        const file = provider.getActivePath?.()
+        return file === undefined ? { id: provider.id } : { id: provider.id, file }
+      })
+
       let job: LiveJob | null = null
       try {
-        const response = await rpc.call(LIVE_CHANNEL, LIVE_POLL, { tabId: id, targets }, controller.signal)
+        const response = await rpc.call(LIVE_CHANNEL, LIVE_POLL, { tabId: id, targets, workbooks }, controller.signal)
         if (!response.ok) {
           await sleep(RETRY_DELAY_MS, controller.signal)
           continue

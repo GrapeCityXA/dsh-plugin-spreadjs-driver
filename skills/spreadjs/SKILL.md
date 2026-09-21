@@ -50,6 +50,9 @@ ignore it; do not explain the format or make it part of the task.
   above still describes every other tool. Reach for the live tool when the user is
   looking at the sheet and the edit is the point of the conversation; use the file
   tools when the work is batch, long-running, or nobody is watching a designer.
+  **`sjs_live_status` is how you tell which of those you are in** — see
+  "Recommended flow". A file edit and a live edit change *different* documents, and
+  only one of them is the one on the user's screen.
 - Rows and columns are **zero-based** in code (`setValue(0, 0)` is cell A1).
   A used-range `row`/`col` is also zero-based; `rowCount`/`colCount` are counts.
 - The sheet-name dictionary is not registered by `fromJSON()`, so
@@ -75,6 +78,7 @@ ignore it; do not explain the format or make it part of the task.
 | Start | `sjs_import` | Bring an existing `.xlsx` / `.csv` / `.ssjson` into a working workbook (target never overwrites). |
 | Start | `sjs_worktree` | `create` an isolated draft snapshot of a committed workbook; `list` open drafts. |
 | Inspect | `sjs_status` | List sheets, dimensions and used ranges of a workbook (metadata, not cell values). |
+| Inspect | `sjs_live_status` | Whether a designer is connected in the DSH web UI, and which file it has open. **Call this first whenever the user might be looking at a spreadsheet** — it is free (no round trip) and it is the only reliable way to know whether `sjs_live_execute` will work. Reads `transport` (mounted/unmounted), `client` (connected/none) and `workbooks[].file`. |
 | Write | `sjs_execute` | Run SpreadJS JavaScript against one workbook; the file is saved afterwards. |
 | Write | `sjs_live_execute` | Run SpreadJS JavaScript against the workbook **open in the user's designer**, in their browser. Same injected names as `sjs_execute` **except `io`, which the live path does not have** — `io` is served by the engine's own loopback server, and this code runs in the user's browser instead of the engine, so there is no file access here. Read a file with `sjs_execute` and pass the values instead. The edit appears on screen at once. **The file on disk is untouched** unless you pass `save: true` — do that only when the user asked for the file to be saved or overwritten. Needs a file **actually open** in the designer: a mounted panel with nothing open gives `SJS_LIVE_NO_WORKBOOK`, and no panel at all gives `SJS_LIVE_NO_CLIENT`. When the user says "preview this online", they usually have not opened it yet — tell them to open it from the sidebar rather than reaching for this tool. |
 | Verify | `sjs_execute` | Return the cells you need, or call `snapshot()` for the sheet summary. |
@@ -83,12 +87,29 @@ ignore it; do not explain the format or make it part of the task.
 
 ## Recommended flow
 
-**First, decide which document you are editing.** If the user has a workbook open
-in the SpreadJS designer and the thing you are about to change is what they are
-looking at, use `sjs_live_execute` and skip the file steps below — that document
-belongs to the designer, and the change stays there until the user asks for it to
-be saved. The flow underneath is for work on a file: batch edits, long jobs, or a
-session where nobody is watching a designer.
+**First, decide which document you are editing — and ask, do not guess.** Call
+`sjs_live_status` before the first edit of a conversation whenever the user could
+be looking at a spreadsheet ("this table", "the sheet I have open", "make the
+amount column red", or anything naming a file they just opened in the UI). It
+takes no round trip, so it is cheaper than being wrong in either direction.
+
+- **A workbook is listed** → that document is on screen. Use `sjs_live_execute`
+  and skip the file steps below; the change stays there until the user asks for
+  it to be saved.
+- **`client: none`** → nobody is watching a designer. Use the file tools below.
+  Do not keep re-checking, and do not edit a file expecting the user to see it.
+- **`transport: unmounted`** → this profile can never serve the live path. Use
+  the file tools; do not try `sjs_live_execute` at all.
+
+**Why this matters enough to be the first step.** The two paths change different
+documents. `sjs_execute` edits a `.ssjson` in a headless engine — your change is
+real, correct, and **invisible to anyone with the file open in the designer**,
+which keeps its own copy in memory. That failure looks like success from every
+tool result, so the user simply does not see their sheet change. `sjs_live_status`
+is what prevents it.
+
+The flow underneath is for work on a file: batch edits, long jobs, or a session
+where nobody is watching a designer.
 
 1. **Locate or create the workbook.** Existing file → `sjs_status` on it to see
    sheets and used ranges. Fresh table → `sjs_new`. Real `.xlsx`/`.csv` source →
@@ -489,7 +510,7 @@ not free text.
 | `SJS_BROWSER_UNAVAILABLE`, `SJS_BROWSER_FAILED` | No Edge/Chrome on the machine, or the browser would not start | The engine runs in a real browser. Install Microsoft Edge or Google Chrome, or point the plugin's `browserPath` at one. Retry once before reporting — a launch is occasionally transient. |
 | `SJS_WORKER_TIMEOUT`, `SJS_WORKER_INVALID_RESPONSE`, `SJS_WORKER_FAILED`, `SJS_BAD_REQUEST` | Worker/transport failure | Retry once with simpler work; report if persistent. |
 | `SJS_ENGINE_DIED` | The engine (and its browser) went away **while this call was running** — a crash, or the host ran out of patience with an earlier overrun | The next call starts a fresh engine automatically, so just retry this one. If it repeats on a plain operation, the machine is likely out of memory. |
-| `SJS_LIVE_NO_CLIENT` | `sjs_live_execute` found no designer connected | Nobody has a designer panel in the DSH web UI. Either ask the user to open one, or do the work against a file with `sjs_execute` instead — do not retry the live tool in a loop. |
+| `SJS_LIVE_NO_CLIENT` | `sjs_live_execute` found no designer connected | Nobody has a designer panel in the DSH web UI. Either ask the user to open one, or do the work against a file with `sjs_execute` instead — do not retry the live tool in a loop. Calling `sjs_live_status` first is what avoids reaching this by accident. |
 | `SJS_LIVE_NO_WORKBOOK` | A designer is connected, but **no file is open in it** | This is a normal state, not a fault: the panel mounts before the user picks a file. **Ask the user to open the file** in the Web UI sidebar, then retry. Do NOT go reading the editor plugin's source to work out what is wrong — this error already says it. If the user does not want to open it, use `sjs_execute` on the file instead. |
 | `SJS_LIVE_UNKNOWN_TARGET` | A designer is connected but `target` names a workbook it does not hold | Omit `target` to use whichever designer is connected; the message lists the ids that *are* attached. |
 | `SJS_LIVE_TIMEOUT` | A designer took the job and never answered | The tab may have been closed or reloaded mid-edit. Check whether the edit landed before retrying, and tell the user if the designer went away. |

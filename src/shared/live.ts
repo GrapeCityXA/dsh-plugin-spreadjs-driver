@@ -36,6 +36,17 @@ export const LIVE_POLL = 'poll'
 /** Endpoint: a tab reporting the outcome of one job. */
 export const LIVE_RESULT = 'result'
 
+/** One workbook a tab is offering, with whatever its owner knows about it. */
+export interface LiveOfferedWorkbook {
+  readonly id: string
+  /**
+   * Absolute path of the file open in it, when the owner knows one. Absent means
+   * the owner cannot say — most often because nothing is open at all, which is
+   * the state `SJS_LIVE_NO_WORKBOOK` reports on an edit.
+   */
+  readonly file?: string
+}
+
 /** A browser tab offering to run jobs. */
 export interface LivePollRequest {
   /**
@@ -49,6 +60,26 @@ export interface LivePollRequest {
    * nothing to serve and the host will not hand it work.
    */
   readonly targets: readonly string[]
+  /**
+   * What each offered workbook is actually holding. ADDITIVE, and deliberately
+   * not the thing routing reads: `targets` alone still decides who gets a job,
+   * so a host that ignores this field routes exactly as it did before.
+   *
+   * It exists because routing is not the only question. `sjs_live_status` has to
+   * answer "is a designer waiting, and which file does it have open" WITHOUT
+   * spending a job on finding out — an edit is the only other way to ask, and a
+   * model that has to risk a failed edit to learn whether the live path applies
+   * will simply avoid the live path.
+   */
+  readonly workbooks?: readonly LiveOfferedWorkbook[]
+}
+
+/** True when `value` is a well-formed offered-workbook entry. */
+function isOfferedWorkbook(value: unknown): value is LiveOfferedWorkbook {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as { id?: unknown; file?: unknown }
+  if (typeof candidate.id !== 'string' || candidate.id === '') return false
+  return candidate.file === undefined || typeof candidate.file === 'string'
 }
 
 /** One unit of work, handed to a tab that can run it. */
@@ -88,11 +119,14 @@ export type LiveJobResult =
 /** True when `value` is a well-formed poll request. */
 export function isLivePollRequest(value: unknown): value is LivePollRequest {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as { tabId?: unknown; targets?: unknown }
-  return typeof candidate.tabId === 'string'
-    && candidate.tabId !== ''
-    && Array.isArray(candidate.targets)
-    && candidate.targets.every((target) => typeof target === 'string')
+  const candidate = value as { tabId?: unknown; targets?: unknown; workbooks?: unknown }
+  if (typeof candidate.tabId !== 'string' || candidate.tabId === '') return false
+  if (!Array.isArray(candidate.targets)) return false
+  if (!candidate.targets.every((target) => typeof target === 'string')) return false
+  // Optional, but strict when present: a malformed description would make status
+  // report something the tab never meant.
+  if (candidate.workbooks === undefined) return true
+  return Array.isArray(candidate.workbooks) && candidate.workbooks.every(isOfferedWorkbook)
 }
 
 /** True when `value` is a well-formed job result. */
