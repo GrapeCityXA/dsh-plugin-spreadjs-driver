@@ -4,14 +4,14 @@
 
 [English](README.md) · 简体中文
 
-`dsh-spreadjs-excel` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，空闲一分钟后自行退出，用户看不到）。
+`dsh-spreadjs-excel` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，随 DSH 进程一起结束，用户看不到）。
 
 ## 环境要求
 
 - **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.5-rc.2`）。
-- **宿主机需装有 Microsoft Edge 或 Google Chrome**。引擎运行在真实浏览器进程中（插件不自带浏览器内核，也不会弹出任何界面）。两者都在时优先用 Edge；可用插件配置 `browserPath` 指定具体可执行文件。都找不到时报 `SJS_BROWSER_UNAVAILABLE`，并在消息里列出探测过的路径。
+- **宿主机需装有 Google Chrome 或 Microsoft Edge**。引擎运行在真实浏览器进程中（插件不自带浏览器内核，也不会弹出任何界面）。两者都在时优先用 Chrome——Edge 会把自己的标签页发布进 Windows 外壳，在 Alt+Tab 里堆积条目；两种情况都可以用插件配置 `browserPath` 指定具体可执行文件。都找不到时报 `SJS_BROWSER_UNAVAILABLE`，并在消息里列出探测过的路径。
 - 需要一个可写的临时目录，用于浏览器的一次性 profile。
-- `.pdf` 导出里若要保留中文，宿主机上至少要有可发现的支持 CJK 的 `.ttf`/`.otf` 字体（默认自动扫描系统字体目录；可通过环境变量 `GC_SJS_PDF_FONT_DIRS` 追加目录——不支持 `.ttc`）。`png` 截图不需要额外字体：浏览器自带真实字体。
+- **`.pdf` 导出要保留中文，字体必须由宿主机提供。** 插件**不自带任何字体**：它在操作系统的字体目录（以及环境变量 `GC_SJS_PDF_FONT_DIRS` 追加的目录）里找 `.ttf` / `.otf`，有一个就够。Windows 和 macOS 一定有；**默认安装的 Linux 通常没有**——它的中文字体多是 `.ttc`，而 SpreadJS 无法嵌入 `.ttc`，所以要事先装一个 `.ttf`，或用 `GC_SJS_PDF_FONT_DIRS` 指过去。找不到可用字体时，`.pdf` 导出会以 `SJS_PDF_FONT_UNAVAILABLE` 明确失败，而不是交回一份文字缺失的 PDF。`png` 截图不需要这些——浏览器自带真实字体，且按字形逐个回退。
 
 **关于 DSH 版本区间。** `dsh.engines.dsh` 与各 `@deepseek-ai/*` peer 区间写的是精确版本 `0.1.5-rc.2`——既不是 caret，也不是拉长的列表。DSH 尚未 1.0，rc 之间就会有不兼容改动，所以这个插件能诚实声明的只有 CI 真跑过的那一个版本。对预发布版加 caret 等于默默承诺下一个 rc 也兼容；写 `>=` 则等于承诺永远兼容。将来 DSH 发新版、且在本地 CI 跑通之后，这个区间才会被显式抬到那个版本——一次一个，逐版本推进。
 
@@ -90,7 +90,7 @@ return { total: s.getValue(5, 1) }
 - `sjs_execute` 可驱动图表、形状、切片器与数据透视表（`shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` 包随插件一起分发）；png 截图会覆盖浮动对象，即使它位于已用单元格范围之外，或处于没有已用单元格的工作表（如透视表布局页）。
 - 越界写入会自动扩展工作表而不是被丢弃；针对同一工作簿的操作串行执行，因此并行工具调用不会互相覆盖。
 - 每次 `sjs_execute` 都在批处理模式下运行——重绘、变更事件与计算服务全部挂起，实测 2 万行带公式的填充快 3.6 倍。脚本中途若要读计算值需先 `spread.resumeCalcService()`；落盘与导出的值始终是完整计算过的。
-- 当工作表超出 2600×2200 光栅上限时，png 结果会带 `clipped: true`，此时图片是裁剪版而不是报错。
+- 当工作表超出 2600×2200 光栅上限时，png 结果会带 `clipped: true`，此时图片是裁剪版而不是报错。这些数字是 **CSS 像素**，而渲染是 **2 倍**的，所以结果里会报两个尺寸：`width`/`height` 是 CSS 像素（核对列宽算术时用的就是它），`pixels` 是文件本身的真实像素。
 
 ## 开发
 

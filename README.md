@@ -4,14 +4,14 @@
 
 English · [简体中文](README.zh-CN.md)
 
-`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser the plugin keeps warm: it starts on your first spreadsheet operation, gives each operation a fresh page, and shuts itself down after a minute of idling. Nobody sees it.
+`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser the plugin keeps warm: it starts on your first spreadsheet operation, gives each operation a fresh page, and lives as long as the DSH process. Nobody sees it.
 
 ## Requirements
 
 - **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.5-rc.2`).
-- **Microsoft Edge or Google Chrome installed.** The engine runs in a real browser process (no browser binary ships with the plugin, and no browser UI is ever shown). Edge is preferred when both exist; set the `browserPath` plugin option to point at a specific executable. Nothing found → `SJS_BROWSER_UNAVAILABLE`, naming the paths that were probed.
+- **Google Chrome or Microsoft Edge installed.** The engine runs in a real browser process (no browser binary ships with the plugin, and no browser UI is ever shown). Chrome is preferred when both exist — Edge publishes its tabs into Windows shell surfaces, which litters Alt+Tab; set the `browserPath` plugin option to point at a specific executable either way. Nothing found → `SJS_BROWSER_UNAVAILABLE`, naming the paths that were probed.
 - A writable temp directory for the browser's throwaway profile.
-- For `.pdf` export containing CJK text, at least one CJK-capable `.ttf`/`.otf` font must be discoverable on the host (system font directories are scanned automatically; add others via the `GC_SJS_PDF_FONT_DIRS` environment variable — `.ttc` files are not supported). PNG screenshots need nothing extra: the browser has real fonts.
+- **For `.pdf` export containing CJK text, the host must supply a CJK-capable font.** The plugin ships no fonts: it looks for `.ttf` / `.otf` files in the operating system's font directories (plus anything listed in `GC_SJS_PDF_FONT_DIRS`) and needs one. Windows and macOS always have one. **A default Linux install usually does not** — its CJK fonts are typically `.ttc`, which SpreadJS cannot embed — so plan on installing a `.ttf` or pointing `GC_SJS_PDF_FONT_DIRS` at one. With no usable font, `.pdf` export fails with `SJS_PDF_FONT_UNAVAILABLE` rather than handing back a PDF whose text is missing. PNG screenshots need none of this: the browser has real fonts and falls back per glyph.
 
 **On the DSH version range.** `dsh.engines.dsh` and the `@deepseek-ai/*` peer
 ranges name `0.1.5-rc.2` exactly — not a caret, and not a widened list. DSH is
@@ -99,7 +99,7 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 - `sjs_execute` can drive charts, shapes, slicers and pivot tables (the `shapes` / `charts` / `slicers` / `pivot-addon` / `datacharts-addon` packs ship with the plugin); a `png` snapshot covers floating objects even when they sit outside the used cell range or on a sheet with no used cells (a pivot layout).
 - Out-of-range writes grow the sheet instead of being dropped, and operations naming the same workbook run serially, so parallel tool calls cannot lose each other's edits.
 - Each `sjs_execute` runs batched — repaint, change events and calculation are all suspended, which measured 3.6× faster on a 20k-row fill with formulas. A script that reads a computed value mid-way must `spread.resumeCalcService()` first; stored and exported values are always fully calculated.
-- A `png` result carries `clipped: true` when the sheet is larger than the 2600×2200 raster ceiling; the image is then a crop rather than an error.
+- A `png` result carries `clipped: true` when the sheet is larger than the 2600×2200 raster ceiling; the image is then a crop rather than an error. Those numbers are **CSS pixels**, and the render is at **2×**, so a result reports its size twice: `width`/`height` in CSS pixels (the unit to compare against your own column arithmetic) and `pixels` for the file itself.
 
 ## Development
 
