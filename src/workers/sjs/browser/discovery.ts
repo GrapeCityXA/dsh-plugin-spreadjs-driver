@@ -12,8 +12,21 @@
  * ACTIONABLE: `SJS_BROWSER_UNAVAILABLE` names the paths that were probed and the
  * two ways to fix it, never a spawn stack trace.
  *
- * Order: the host's config value (surfaced as SJS_BROWSER_PATH) → Edge → Chrome,
+ * Order: the host's config value (surfaced as SJS_BROWSER_PATH) → Chrome → Edge,
  * first existing path wins.
+ *
+ * **Chrome before Edge, deliberately.** Edge publishes its tabs into Windows
+ * shell surfaces through `Windows.UI.Shell.WindowTabManager`, which left an
+ * Alt+Tab entry per engine launch — one that outlived the process and could only
+ * be cleared by restarting explorer. The engine now disables that feature on
+ * whichever browser it launches (`--disable-features=WindowTabManager`), so the
+ * ordering is belt-and-braces; but Edge is also the browser that has actually
+ * been observed doing it, and a user with both installed has no reason to be the
+ * one who finds out.
+ *
+ * Falling through to Edge when Chrome is absent is what keeps this free: Edge is
+ * on essentially every supported Windows install, so the order changes which
+ * browser is used, never whether one is found.
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -33,22 +46,23 @@ function candidates(): readonly BrowserLocation[] {
     const localAppData = process.env['LOCALAPPDATA']
     const skip = (value: string | undefined): readonly string[] => (value === undefined ? [] : [value])
     return [
-      // Edge first: it is present on every supported Windows install.
-      { kind: 'edge', path: join(programFilesX86, 'Microsoft\\Edge\\Application\\msedge.exe') },
-      { kind: 'edge', path: join(programFiles, 'Microsoft\\Edge\\Application\\msedge.exe') },
-      ...skip(localAppData).map((base): BrowserLocation => ({ kind: 'edge', path: join(base, 'Microsoft\\Edge\\Application\\msedge.exe') })),
+      // Chrome first: see the header. Edge remains the fallback, so a machine
+      // without Chrome is served exactly as well as before.
       { kind: 'chrome', path: join(programFiles, 'Google\\Chrome\\Application\\chrome.exe') },
       { kind: 'chrome', path: join(programFilesX86, 'Google\\Chrome\\Application\\chrome.exe') },
       ...skip(localAppData).map((base): BrowserLocation => ({ kind: 'chrome', path: join(base, 'Google\\Chrome\\Application\\chrome.exe') })),
+      { kind: 'edge', path: join(programFilesX86, 'Microsoft\\Edge\\Application\\msedge.exe') },
+      { kind: 'edge', path: join(programFiles, 'Microsoft\\Edge\\Application\\msedge.exe') },
+      ...skip(localAppData).map((base): BrowserLocation => ({ kind: 'edge', path: join(base, 'Microsoft\\Edge\\Application\\msedge.exe') })),
     ]
   }
   const portable = (kind: BrowserKind, commands: readonly string[]): readonly BrowserLocation[] =>
     commands.map((path) => ({ kind, path }))
   return [
-    { kind: 'edge', path: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
     { kind: 'chrome', path: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' },
-    ...portable('edge', ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', '/usr/bin/microsoft-edge-beta']),
+    { kind: 'edge', path: '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' },
     ...portable('chrome', ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium']),
+    ...portable('edge', ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', '/usr/bin/microsoft-edge-beta']),
   ]
 }
 
