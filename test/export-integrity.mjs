@@ -302,12 +302,23 @@ const run = async () => {
     assert(inkRows(png).some((dark) => dark > 0), 'at least one band has dark pixels (text or gridlines were rasterized)')
   })()
 
-  await step('png: the image dimensions match what the worker reported', async () => {
+  await step('png: the image is the size the worker reported, at its render scale', async () => {
     assert(pngShot !== null, 'the png could not be inspected (an earlier step failed)')
     const png = decodePng(await readFile(pngOut))
+    // The image carries the backing-store pixels (CSS size x scale) — that is the
+    // resolution the screenshot is FOR. `width`/`height` are the CSS numbers the
+    // caller measures columns against, so they are not the image's size any more,
+    // and asserting the two are equal would now be asserting the image is soft.
     assert(
-      png.width === pngShot.width && png.height === pngShot.height,
-      `IHDR ${png.width}x${png.height} vs reported ${pngShot.width}x${pngShot.height}`,
+      png.width === pngShot.pixels.width && png.height === pngShot.pixels.height,
+      `IHDR ${png.width}x${png.height} vs reported pixels ${pngShot.pixels.width}x${pngShot.pixels.height}`,
+    )
+    // And the two views of the same render must agree with each other.
+    assert(pngShot.scale >= 2, `the render is at scale ${pngShot.scale}; 1 is the soft render this replaced`)
+    assert(
+      Math.round(png.width / pngShot.scale) === pngShot.width &&
+        Math.round(png.height / pngShot.scale) === pngShot.height,
+      `CSS size ${pngShot.width}x${pngShot.height} is not the pixel size divided by scale ${pngShot.scale}`,
     )
     assert(pngShot.sheet === SHEET, `the render is the data sheet (got ${pngShot.sheet})`)
   })()

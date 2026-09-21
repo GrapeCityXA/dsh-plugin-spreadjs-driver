@@ -237,8 +237,16 @@ async function runScreenshot(runtime: BrowserRuntime, request: Extract<SjsWorker
     format: 'png',
     file: request.outputPath,
     bytes: shot.bytes,
+    // CSS pixels: what the caller measures columns against (a column is N CSS
+    // pixels wide, and summing them is how the model checks the layout).
     width: shot.width,
     height: shot.height,
+    // The image's own pixel size — `width`/`height` times the render scale. Both
+    // are reported because they answer different questions and a caller that
+    // assumes either is the other will be wrong: the file is this big, the sheet
+    // is that big.
+    pixels: { width: shot.pixels.width, height: shot.pixels.height },
+    scale: shot.scale,
     sheet: shot.sheet,
     ...(shot.used === null ? {} : { usedRange: { row: shot.used.row, rowCount: shot.used.rowCount, column: shot.used.col, columnCount: shot.used.colCount } }),
     font: shot.font,

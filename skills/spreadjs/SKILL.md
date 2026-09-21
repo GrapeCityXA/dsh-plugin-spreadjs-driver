@@ -140,13 +140,25 @@ content height = 20 (column header) + Σ visible row heights
 canvas         = content + 8px padding
 ```
 
+**Those numbers are CSS pixels, and the file is twice that.** The render uses a
+device pixel ratio of **2** so the text is sharp; a result therefore reports two
+sizes, and they answer different questions:
+
+- `width` / `height` — CSS pixels. This is the number to compare against your own
+  column arithmetic, and the only one the formulas above produce.
+- `pixels` / `scale` — the image's actual pixel size and the ratio between the two.
+
+So the 428-tall example below is a **856-pixel-tall file**, and a sheet at the
+ceiling produces a 5164 × 4364 image, not a 2582 × 2182 one.
+
 - Hidden rows and columns report `getRowHeight` / `getColumnWidth` as **0**, so
   they take no space in the image.
 - Floating objects (charts, shapes, slicers, pictures) extend the box to their own
   coordinates when they reach past the cells.
 - Floor **282 × 182** — a small or empty sheet is padded up to this, never smaller.
-- Ceiling **2582 × 2182** — past it the image is a **crop** and the result carries
-  `clipped: true`. Read that flag rather than assuming the picture is complete.
+- Ceiling **2582 × 2182** (CSS) — past it the image is a **crop** and the result
+  carries `clipped: true`. Read that flag rather than assuming the picture is
+  complete.
 - **A snapshot costs time in proportion to the workbook's data, not the image.**
   It reloads the whole workbook to measure and again to render, so a large sheet
   is slow: roughly 19 s end-to-end at 100k rows, against ~6 s for `sjs_status` on
@@ -154,7 +166,7 @@ canvas         = content + 8px padding
   On a big sheet prefer exporting `.xlsx` / `.csv` and reading values back, and
   treat a `clipped: true` snapshot as a thumbnail rather than a way to inspect it.
 
-So a 20-row table with 90px columns renders 282 wide (floored) and
+So a 20-row table with 90px columns renders 282 CSS pixels wide (floored) and
 `20 + 20 × 20 + 8 = 428` tall.
 
 ## Build tables that read well (layout & style)

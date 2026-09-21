@@ -111,6 +111,8 @@ window.__runtimeLoaded = new Promise(function (resolve, reject) {
 /** Geometry constants shared with the page (see page.embed.js). */
 const HOST_WIDTH = 1400
 const HOST_HEIGHT = 900
+/** Device pixels per CSS pixel for screenshots; see setDeviceMetricsOverride. */
+const SHOT_SCALE = 2
 const MAX_SHOT_WIDTH = 2600
 const MAX_SHOT_HEIGHT = 2200
 /** Canvas is host client size minus one scrollbar (18px) on each axis. */
@@ -141,8 +143,14 @@ export interface PdfExportResult {
 
 export interface PngShotResult {
   bytes: number
+  /** Width in CSS pixels — the unit column widths are measured in. */
   width: number
+  /** Height in CSS pixels. */
   height: number
+  /** The image's own pixel size: `width`/`height` times {@link scale}. */
+  pixels: { width: number; height: number }
+  /** Device pixels per CSS pixel this render used. */
+  scale: number
   clipped?: boolean
   sheet: string
   used: { row: number; rowCount: number; col: number; colCount: number } | null
@@ -293,10 +301,17 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
       try {
         await page.send('Page.enable')
         await page.send('Runtime.enable')
-        // deviceScaleFactor 1 keeps canvas backing-store pixels == CSS pixels, which
-        // is what makes the reported screenshot width comparable with the model's own
-        // column arithmetic.
-        await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: 1, mobile: false })
+        // Render at 2 device pixels per CSS pixel. SpreadJS sizes its canvas from
+        // `window.devicePixelRatio`, so this is what decides the screenshot's real
+        // resolution — and at 1 a sheet photographed 888x328 is simply soft on a
+        // high-DPI display, which is every display people use now.
+        //
+        // The image gets 4x the pixels; what the tool REPORTS stays in CSS pixels
+        // (the page divides by the same ratio), because the reported width is what
+        // the model checks its column arithmetic against and columns are measured
+        // in CSS pixels. Scaling the canvas up after the fact would only interpolate
+        // a low-resolution render — the resolution has to be chosen here.
+        await page.send('Emulation.setDeviceMetricsOverride', { width: HOST_WIDTH, height: HOST_HEIGHT + 100, deviceScaleFactor: SHOT_SCALE, mobile: false })
         const detachDiagnostics = forwardPageDiagnostics(page, log)
         const pageStartedAt = performance.now()
         const injected = await bootPage(page, origin, log)

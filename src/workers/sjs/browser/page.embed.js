@@ -728,15 +728,36 @@ async function screenshotPng(sourceUrl, outputUrl, maxWidth, maxHeight, pad, scr
     }
   }
 
+  // The canvas is a BACKING STORE: its pixel size is the CSS size times the
+  // device pixel ratio the host asked for. The image keeps those pixels (that is
+  // the point — it is what makes the text sharp), but the numbers reported back
+  // are converted to CSS pixels, because they are what the caller checks its
+  // column arithmetic against and columns are measured in CSS pixels.
+  const scale = shotScale();
+
   return {
     bytes: png.size,
-    width: canvasWidth,
-    height: canvasHeight,
+    width: Math.round(canvasWidth / scale),
+    height: Math.round(canvasHeight / scale),
+    pixels: { width: canvasWidth, height: canvasHeight },
+    scale: scale,
     clipped: clipped,
     sheet: measure.sheetName,
     used: measure.used,
     font: font,
   };
+}
+
+/**
+ * Device pixels per CSS pixel on the canvas the engine draws into.
+ *
+ * Read from the page rather than passed in: `devicePixelRatio` is the value the
+ * engine itself sized the canvas from, so this cannot drift out of step with the
+ * host's `Emulation.setDeviceMetricsOverride` setting.
+ */
+function shotScale() {
+  const ratio = typeof window === 'object' ? window.devicePixelRatio : undefined;
+  return typeof ratio === 'number' && isFinite(ratio) && ratio >= 1 ? ratio : 1;
 }
 
 // ------------------------------------------------------------------- bridge
