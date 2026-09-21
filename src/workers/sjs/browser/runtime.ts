@@ -488,7 +488,7 @@ export async function loadRuntime(options: RuntimeOptions = {}): Promise<Browser
  * browser's HTTP cache makes the transfer cheap after the first one, but the
  * parse/registration work is paid again — see docs/design-real-browser-runtime.md.
  */
-function pdfFontRequests(hostUrl: (path: string) => string): { family: string; url: string; fallback?: boolean }[] {
+function pdfFontRequests(hostUrl: (path: string) => string): { family: string; url: string; fallback?: boolean; cjk?: boolean }[] {
   const fonts: readonly PdfFontFile[] = discoverPdfFonts()
   if (fonts.length === 0) {
     throw new SjsWorkerError(
@@ -499,9 +499,12 @@ function pdfFontRequests(hostUrl: (path: string) => string): { family: string; u
   }
   // fallback 命中含中文的字体优先；否则退到首个已注册字体（与 jsdom 版一致）。
   const fallback = fonts.find((font) => font.cjk) ?? fonts[0]
+  // `cjk` travels to the page because the page has to decide WHAT TO REGISTER,
+  // and that decision is the whole ball game — see registerPdfFonts.
   return fonts.map((font) => ({
     family: font.family,
     url: hostUrl(font.file),
+    ...(font.cjk ? { cjk: true } : {}),
     ...(fallback !== undefined && font.file === fallback.file ? { fallback: true } : {}),
   }))
 }

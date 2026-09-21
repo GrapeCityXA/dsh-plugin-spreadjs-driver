@@ -410,6 +410,27 @@ async function registerPdfFonts(fonts) {
   if (manager === undefined || manager === null) {
     throw fail('SJS_PDF_UNAVAILABLE', 'PDF 功能不可用：未加载 spread-sheets-pdf（其必须先于 pdf 加载 print）。');
   }
+  // **Register ONLY the CJK-capable faces** (falling back to all of them when the
+  // host has no CJK font at all).
+  //
+  // The PDF writer has no glyph-level fallback of its own: it resolves ONE font
+  // per run from the cell's fontFamily, and a character with no glyph in that
+  // font is written as notdef — a hollow box. A browser does not have this
+  // problem (it falls back per glyph), which is why the same sheet renders
+  // correctly on screen and wrongly in the PDF.
+  //
+  // Registering everything made it worse rather than better: a sheet whose cells
+  // say `Calibri` (the default) found Calibri registered and used it directly, so
+  // `fallbackFont` was never consulted and every Chinese character in those cells
+  // became a box. Measured on a real 7-sheet workbook: the Calibri subset came
+  // out 21 469 bytes carrying the Latin text, while the CJK face carried only
+  // 5 837 bytes — about twenty characters out of the two hundred the document
+  // actually uses.
+  //
+  // A CJK face carries Latin glyphs too, so registering only those costs a
+  // different typeface for the Latin text and buys correct text everywhere.
+  const cjkOnly = fonts.filter(function (font) { return font.cjk === true; });
+  const wanted = cjkOnly.length > 0 ? cjkOnly : fonts;
   // Timed and reported because this is, by measurement, the single most
   // expensive step of a PDF operation — and the one step a persistent browser
   // cannot make cheaper: the font manager belongs to THIS page, so every
@@ -418,7 +439,7 @@ async function registerPdfFonts(fonts) {
   const fontsStartedAt = Date.now();
   const registered = [];
   let fallbackBuffer = null;
-  for (const font of fonts) {
+  for (const font of wanted) {
     let buffer;
     try {
       buffer = await fetchBytes(font.url);
@@ -427,7 +448,10 @@ async function registerPdfFonts(fonts) {
     }
     try {
       const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-      manager.registerFont(font.family, { normal: arrayBuffer });
+      // `bold` as well as `normal`: the writer asks for the style the cell uses,
+      // and a face registered without it is a face it cannot pick. The official
+      // example registers both for exactly this reason.
+      manager.registerFont(font.family, { normal: arrayBuffer, bold: arrayBuffer });
       registered.push(font.family);
       if (font.fallback === true && fallbackBuffer === null) fallbackBuffer = arrayBuffer;
     } catch (error) {
@@ -442,7 +466,8 @@ async function registerPdfFonts(fonts) {
     );
   }
   if (fallbackBuffer !== null) manager.fallbackFont = function () { return fallbackBuffer; };
-  console.log('[sjs:page] registered ' + registered.length + ' PDF fonts in ' + (Date.now() - fontsStartedAt) + 'ms');
+  console.log('[sjs:page] registered ' + registered.length + ' PDF fonts in ' + (Date.now() - fontsStartedAt) + 'ms' +
+    ' (from ' + fonts.length + ' discovered, ' + (cjkOnly.length > 0 ? 'CJK-capable only' : 'no CJK font found') + ')');
   return registered;
 }
 
