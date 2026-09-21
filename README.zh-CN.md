@@ -1,10 +1,10 @@
-# dsh-plugin-spreadjs-driver
+# @grapecity-software/dsh-spreadjs-driver
 
 > 为 DeepSeek Harness (DSH) 提供 SpreadJS 电子表格能力：通过内置的 `sjs_*` 工具创建、查看、编辑、导入、导出与截图 `.xlsx`/`.ssjson` 工作簿。
 
 [English](README.md) · 简体中文
 
-`dsh-plugin-spreadjs-driver` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，随 DSH 进程一起结束，用户看不到）。
+`@grapecity-software/dsh-spreadjs-driver` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，随 DSH 进程一起结束，用户看不到）。
 
 ## 环境要求
 
@@ -17,18 +17,35 @@
 
 ## 安装
 
-在运行 DSH 的 profile 中，从 tarball 或 npm 仓库安装：
+需要 DSH `0.1.5-rc.2`，并装有 Google Chrome 或 Microsoft Edge（引擎跑在系统浏览器里，插件不自带浏览器内核）。
 
-```
-dsh plugin --profile <your-profile> add ./dsh-plugin-spreadjs-driver-<version>.tgz
-# 发布后：
-dsh plugin --profile <your-profile> add dsh-plugin-spreadjs-driver
+插件无需编译。使用已安装的 DSH CLI 安装并启动：
+
+```sh
+dsh plugin --profile web add @grapecity-software/dsh-spreadjs-driver
+dsh --profile web
 ```
 
-确认插件已补丁加载：
+启动后，直接让 Agent 处理表格即可——例如"把 data 目录下的 q2.xlsx 导入，加一列合计再导出"。
 
+无头 profile 同样可用（该插件只添加工具，不依赖 Web UI）：
+
+```sh
+dsh plugin --profile sjs add @grapecity-software/dsh-spreadjs-driver
+dsh --profile sjs "在工作目录建一个新表格并导出 xlsx"
 ```
-dsh --profile <your-profile> --dump-config
+
+也可以通过 npx 安装并启动：
+
+```sh
+npx --yes @deepseek-ai/dsh@latest plugin --profile web add @grapecity-software/dsh-spreadjs-driver
+npx --yes @deepseek-ai/dsh@latest --profile web
+```
+
+从本地 tarball 安装（开发用）：
+
+```sh
+dsh plugin --profile web add ./grapecity-software-dsh-spreadjs-driver-<version>.tgz
 ```
 
 ## 提供的工具
@@ -41,6 +58,7 @@ dsh --profile <your-profile> --dump-config
 | `sjs_import` | 将已有的 `.xlsx` / `.csv` / `.ssjson` 引入为工作簿。 |
 | `sjs_status` | 查看工作表、尺寸与已用区域。 |
 | `sjs_execute` | 对工作簿执行 SpreadJS JavaScript（完成窄工具无法表达的复杂编辑）；执行后自动保存文件。 |
+| `sjs_live_execute` | 对**用户在设计器里正打开的那个工作簿**执行 SpreadJS JavaScript（跑在用户浏览器里）——改动立刻上屏，除非显式传 `save: true`，磁盘文件不动。仅 web profile 可用，且要求设计器里确实打开着文件。 |
 | `sjs_screenshot` | 视觉快照：`png` 对活动工作表做像素渲染，或 `pdf` 打印布局快照。 |
 | `sjs_export` | 产出你要打开的文件：`.xlsx`、`.csv`、`.pdf`，或 `.ssjson` 副本。 |
 | `sjs_worktree` | 为已提交的工作簿创建隔离的草稿快照（`create`），或列出打开的草稿（`list`）。 |
@@ -82,6 +100,85 @@ return { total: s.getValue(5, 1) }
 
 完整的工具地图、执行环境契约与错误码恢复表见 `skills/spreadjs/SKILL.md`；引擎运行时的嵌入方式见 `docs/architecture.md`。
 
+## 让别的 SpreadJS 插件用上我们
+
+`sjs_*` 那些工具只是这个插件的一半。另一半是一个客户端服务——`spreadjsHostBridge`。
+它存在的意义是：**任何一个已经在页面上渲染 SpreadJS 工作簿的 DSH 插件，都可以把那份工作簿
+借给 Agent**，从而白得一个「用自然语言改自己那份活文档」的能力，一行 Agent 代码都不用写。
+
+之所以成立，是因为 DSH 客户端插件的浏览器半**不是沙箱**：所有插件的客户端半被加载进同一个
+页面、同一个 JS realm、同一个堆，所以工作簿是**以引用而非副本**过去的。不序列化、不走 HTTP、
+不落文件。宿主插件继续渲染的就是 Agent 刚写过的那个对象，改动落地即上屏；而且因为它落在
+活文档上，**不会覆盖用户尚未保存的编辑**——这一点是按文件走的路子给不了的。
+
+### 契约
+
+```ts
+// 你的插件/src/client/index.ts
+const BRIDGE_SERVICE = 'spreadjsHostBridge'
+
+interface SpreadjsHostBridge {
+  attach(provider: SpreadjsWorkbookProvider): () => void
+  list(): readonly string[]
+}
+
+interface SpreadjsWorkbookProvider {
+  readonly id: string                   // Agent 靠它寻址
+  getWorkbook(): unknown | undefined    // 你的活 Workbook；没打开时返回 undefined
+  getNamespace?(): unknown              // SpreadJS 命名空间，会作为 `GC` 注入 Agent 代码
+  getActivePath?(): string | undefined  // 会随每次编辑回报给 Agent
+  save?(): Promise<void>                // 仅在 Agent 明确要求保存时被调用
+}
+
+export function apply(ctx: ClientContext): void {
+  ctx.inject([BRIDGE_SERVICE], (child) => {
+    child.effect(() => {
+      const bridge = child.get(BRIDGE_SERVICE) as SpreadjsHostBridge | undefined
+      if (bridge === undefined) return
+      const release = bridge.attach({
+        id: 'my-designer',
+        getWorkbook: () => workbookRef.current,
+        getNamespace: () => GC,
+        getActivePath: () => pathRef.current,
+        save: () => persistToDisk(),
+      })
+      return () => release()          // 面板卸载时**必须**调用
+    }, 'my-plugin: spreadjs bridge')
+  })
+}
+```
+
+`getNamespace` 不是装饰：Agent 代码里注入的名字是 `GC`，脚本一旦要用枚举——比如
+`GC.Spread.Sheets.UsedRangeType`、某个图表类型、某个对齐常量——没有它就根本跑不起来。
+`save` 同样是可选的，而且只有显式传 `save: true` 才会走到，绝不会作为编辑的副作用被调用。
+
+### Agent 因此获得什么
+
+`sjs_live_execute`，通过它的 `target` 参数按你的 `id` 寻址。作用域与 `sjs_execute` 一致——
+`spread`、`workbook`、`GC`、`sheet()`、`snapshot()`、`console`——唯独没有 `io`：`io` 由引擎
+自己的回环服务提供，而这段代码跑在用户浏览器里。
+
+**磁盘文件不动。** 编辑只活在活工作簿里，直到 Agent 显式要求保存——那是唯一会调用你的
+`save()` 的路径。这个默认值是刻意的：Agent 应当能先提出一个用户看得见、撤得回的改动，
+再谈落盘。
+
+### 有几件事是刻意不做的
+
+- **`attach` 不是双向的。** 这个桥只公开「**交出**工作簿」的方式，从不公开「**够到**工作簿」的
+  方式。第三方插件即使拿到这个服务，也只能交出它本来就拥有的文档，看不见、也找不到、更改不了
+  你的。
+- **这个服务只存在于浏览器。** host 侧刻意**没有** `spreadjsHostBridge`，所以 Node 侧插件
+  无法借这个引擎在服务端跑 SpreadJS。
+- **对你没有任何强制要求。** 本插件不在场时 `ctx.inject` 不会触发，你的插件行为与从前完全一致；
+  而 `attach` 返回的注销句柄会在卸载时释放引用，被销毁的文档不会被吊着不放。
+
+`@grapecity-software/dsh-spreadjs-editor`（**0.1.5 及以上**）就是示范消费方：它的
+`src/client/bridge.ts` 是这份契约的完整写法，依赖方向为什么是这样，记在
+`docs/design-live-designer-bridge.md`。版本下限是有意义的——更早的编辑器里根本没有这个桥，
+联动会**静默缺席**而不是报错，`sjs_live_execute` 只是永远找不到设计器。
+
+> `subscribe` 目前只在 provider 接口上声明了，桥还没有读它——实现了也不会有效果。
+
 ## 说明
 
 - 未授权引擎会标记它的产出，这是预期行为：png 渲染在画布上带 **"Evaluation Version"** 戳记，导出的 `.xlsx` 会多出一张同名工作表（`.pdf` 与 `.csv` 没有）。**刻意保留、不做清除**——插件不清，Agent 也不应去清。它不影响数据。
@@ -99,7 +196,7 @@ pnpm install
 pnpm run typecheck     # tsc --noEmit
 pnpm run build         # esbuild → lib/index.js + artifacts/sjs-worker.mjs
 pnpm test:all          # typecheck + build + worker-smoke + export-integrity + tool-smoke
-npm pack               # → dsh-plugin-spreadjs-driver-<version>.tgz
+npm pack               # → grapecity-software-dsh-spreadjs-driver-<version>.tgz
 ```
 
 把 tarball 装进一个临时 profile，在真实会话中驱动这些工具做端到端冒烟。
