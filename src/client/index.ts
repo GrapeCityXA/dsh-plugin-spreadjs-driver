@@ -1,5 +1,5 @@
 /**
- * dsh-spreadjs-excel — browser half.
+ * dsh-plugin-spreadjs-driver — browser half.
  *
  * Publishes `spreadjsHostBridge`, the one door through which a host plugin that
  * owns a live SpreadJS workbook can hand it over:
@@ -24,7 +24,7 @@ import { runAgainstProvider, type LiveResult } from './executor.ts'
 import { startLiveChannel } from './live.ts'
 import { BRIDGE_SERVICE, type ClientContextLike, type SpreadjsHostBridge, type SpreadjsWorkbookProvider } from './types.ts'
 
-export const name = 'dsh-spreadjs-excel'
+export const name = 'dsh-plugin-spreadjs-driver'
 
 /** Nothing is required: the bridge publishes its door and waits. */
 export const inject: string[] = []
@@ -82,7 +82,7 @@ export function apply(ctx: ClientContextLike): void {
   ctx.inject(['connection'], (connected) => {
     connected.effect(
       () => startLiveChannel(connected.get('connection'), attachedProviders),
-      'dsh-spreadjs-excel: live workbook channel',
+      'dsh-plugin-spreadjs-driver: live workbook channel',
     )
   })
 
@@ -90,5 +90,5 @@ export function apply(ctx: ClientContextLike): void {
     // The page is unloading or the fiber is disposing: drop every reference so a
     // destroyed workbook is not kept alive by this map.
     attached.clear()
-  }, 'dsh-spreadjs-excel: release attached workbooks')
+  }, 'dsh-plugin-spreadjs-driver: release attached workbooks')
 }

@@ -1,6 +1,6 @@
 # Architecture
 
-`dsh-spreadjs-excel` embeds a [SpreadJS](https://www.grapecity.com/spreadjs)
+`dsh-plugin-spreadjs-driver` embeds a [SpreadJS](https://www.grapecity.com/spreadjs)
 engine in the DeepSeek Harness (DSH) runtime. Every `sjs_*` tool call operates on
 a canonical `.ssjson` workbook through a short-lived worker process that loads
 the file with the real SpreadJS engine, applies the requested change, and saves

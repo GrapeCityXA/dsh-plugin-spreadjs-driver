@@ -1,7 +1,7 @@
 # 设计方案 · 与 SpreadJS Editor 的活工作簿联动
 
 **状态**：草案 v2（依赖方向已反转为 **editor → 本插件**）
-**参与方**：`dsh-spreadjs-excel`（本仓库，被依赖方）、`dsh-spreadjs-editor`（依赖方）
+**参与方**：`dsh-plugin-spreadjs-driver`（本仓库，被依赖方）、`dsh-spreadjs-editor`（依赖方）
 
 > **v2 变更**：v1 让编辑器发布一个公开服务、我们去找它。v2 反过来——**编辑器调用我们发布的
 > `attach()` 把工作簿交给我们**。原因是安全：`ctx.provide` 是全局服务，同上下文里任何客户端
@@ -56,7 +56,7 @@
 
 ---
 
-## 3. 我们这边要改什么（`dsh-spreadjs-excel`）
+## 3. 我们这边要改什么（`dsh-plugin-spreadjs-driver`）
 
 ### 3.1 新增 client 半
 
@@ -181,8 +181,8 @@ export function apply(ctx: ClientContext): void {
 | `src/client/SpreadsheetHost.tsx` | 暴露 `getWorkbook()`（内部已调用 5 次，加个访问器即可）；如需即时落盘则复用已有的 `save()` |
 | `src/client/SpreadsheetViewer.tsx` | 它**已经**从 props 收到 `ctx`，但没往下传——需把 `ctx`（或一个注册表）传给 `SpreadsheetHost` |
 | `src/client/index.ts` | `ctx.inject(['spreadjsHostBridge'], …)` → `attach(…)` |
-| `package.json` | 增加 **optional peerDependency**：`@grapecity-software/dsh-spreadjs-excel`（依赖方向可见，但不影响单独安装） |
-| `README` | 说明"可选联动：装上 dsh-spreadjs-excel 后可用自然语言驱动当前工作簿" |
+| `package.json` | 增加 **optional peerDependency**：`dsh-plugin-spreadjs-driver`（依赖方向可见，但不影响单独安装） |
+| `README` | 说明"可选联动：装上 dsh-plugin-spreadjs-driver 后可用自然语言驱动当前工作簿" |
 
 **工作量：十几到几十行**，无新依赖、无构建改动。
 

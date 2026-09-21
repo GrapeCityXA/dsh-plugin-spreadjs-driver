@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const BUNDLE = fileURLToPath(new URL('../lib/client.js', import.meta.url))
-const PACKAGE_NAME = 'dsh-spreadjs-excel'
+const PACKAGE_NAME = 'dsh-plugin-spreadjs-driver'
 const BRIDGE_SERVICE = 'spreadjsHostBridge'
 
 function assert(condition, message) {

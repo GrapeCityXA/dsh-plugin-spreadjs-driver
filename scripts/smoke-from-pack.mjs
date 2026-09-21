@@ -16,7 +16,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const PACKED_NAME = 'dsh-spreadjs-excel'
+const PACKED_NAME = 'dsh-plugin-spreadjs-driver'
 
 // Run npm through a real process. On Windows, `.cmd` shims cannot be spawned
 // directly (EINVAL) — instead spawn the current node binary on npm's cli.js
@@ -81,7 +81,7 @@ const assert = (condition, message) => { if (!condition) throw new Error(message
 try {
   const SpreadjsPlugin = await import(pathToFileURL(join(installed, 'lib', 'index.js')).href)
   assert(typeof SpreadjsPlugin.resolveConfig === 'function', 'packed lib exports resolveConfig')
-  assert(SpreadjsPlugin.name === 'dsh-spreadjs-excel', `packed plugin name: ${SpreadjsPlugin.name}`)
+  assert(SpreadjsPlugin.name === 'dsh-plugin-spreadjs-driver', `packed plugin name: ${SpreadjsPlugin.name}`)
 
   const defaultConfig = SpreadjsPlugin.resolveConfig()
   if (defaultConfig.operationTimeoutMs !== 60_000 || defaultConfig.tools !== true || defaultConfig.skills !== true) {

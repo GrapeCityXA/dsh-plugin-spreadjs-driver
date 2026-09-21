@@ -1,10 +1,10 @@
-# dsh-spreadjs-excel
+# dsh-plugin-spreadjs-driver
 
 > 为 DeepSeek Harness (DSH) 提供 SpreadJS 电子表格能力：通过内置的 `sjs_*` 工具创建、查看、编辑、导入、导出与截图 `.xlsx`/`.ssjson` 工作簿。
 
 [English](README.md) · 简体中文
 
-`dsh-spreadjs-excel` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，随 DSH 进程一起结束，用户看不到）。
+`dsh-plugin-spreadjs-driver` 是 DeepSeek Harness 的 [SpreadJS](https://www.grapecity.com/spreadjs) 插件。它把 SpreadJS 引擎内嵌进 Agent 运行时，让 Agent 能够构建表格、写入数值与公式、调整工作表结构，并可视化地核验结果——最终交付可直接用 Excel、WPS Office 等兼容应用打开的 `.xlsx`（或 `.csv` / `.pdf`）。引擎跑在一个隐藏的系统浏览器里（插件把它常驻着：第一次表格操作时启动，每次操作给它一个新页面，随 DSH 进程一起结束，用户看不到）。
 
 ## 环境要求
 
@@ -20,9 +20,9 @@
 在运行 DSH 的 profile 中，从 tarball 或 npm 仓库安装：
 
 ```
-dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-<version>.tgz
+dsh plugin --profile <your-profile> add ./dsh-plugin-spreadjs-driver-<version>.tgz
 # 发布后：
-dsh plugin --profile <your-profile> add dsh-spreadjs-excel
+dsh plugin --profile <your-profile> add dsh-plugin-spreadjs-driver
 ```
 
 确认插件已补丁加载：
@@ -99,7 +99,7 @@ pnpm install
 pnpm run typecheck     # tsc --noEmit
 pnpm run build         # esbuild → lib/index.js + artifacts/sjs-worker.mjs
 pnpm test:all          # typecheck + build + worker-smoke + export-integrity + tool-smoke
-npm pack               # → dsh-spreadjs-excel-<version>.tgz
+npm pack               # → dsh-plugin-spreadjs-driver-<version>.tgz
 ```
 
 把 tarball 装进一个临时 profile，在真实会话中驱动这些工具做端到端冒烟。

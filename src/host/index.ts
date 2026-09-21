@@ -12,7 +12,7 @@ export { SjsProvider } from './provider/sjs-provider.ts'
 export { SjsService } from './service/sjs-service.ts'
 export { LiveChannel } from './live/channel.ts'
 
-export const name = 'dsh-spreadjs-excel'
+export const name = 'dsh-plugin-spreadjs-driver'
 
 /** Compose the spreadjs Provider and its Tools Consumers. */
 export function apply(ctx: Context, config: SpreadjsConfig = {}): void {

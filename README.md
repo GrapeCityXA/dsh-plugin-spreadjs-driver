@@ -1,10 +1,10 @@
-# dsh-spreadjs-excel
+# dsh-plugin-spreadjs-driver
 
 > SpreadJS spreadsheets for DeepSeek Harness (DSH): create, inspect, edit, import, export and screenshot `.xlsx`/`.ssjson` workbooks through the bundled `sjs_*` tools.
 
 English · [简体中文](README.zh-CN.md)
 
-`dsh-spreadjs-excel` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser the plugin keeps warm: it starts on your first spreadsheet operation, gives each operation a fresh page, and lives as long as the DSH process. Nobody sees it.
+`dsh-plugin-spreadjs-driver` is the [SpreadJS](https://www.grapecity.com/spreadjs) plugin for DeepSeek Harness. It embeds the SpreadJS engine in the agent runtime, so the agent can build tables, write values and formulas, restructure sheets, and verify the result visually — then hand back a standard `.xlsx` (or `.csv` / `.pdf`) you can open in Excel, WPS Office, and other compatible applications. The engine runs in a hidden system browser the plugin keeps warm: it starts on your first spreadsheet operation, gives each operation a fresh page, and lives as long as the DSH process. Nobody sees it.
 
 ## Requirements
 
@@ -26,9 +26,9 @@ this range is raised to name it — deliberately, one version at a time.
 From a tarball or the npm registry into the profile you run DSH under:
 
 ```
-dsh plugin --profile <your-profile> add ./dsh-spreadjs-excel-<version>.tgz
+dsh plugin --profile <your-profile> add ./dsh-plugin-spreadjs-driver-<version>.tgz
 # once published:
-dsh plugin --profile <your-profile> add dsh-spreadjs-excel
+dsh plugin --profile <your-profile> add dsh-plugin-spreadjs-driver
 ```
 
 Confirm the plugin is patched in:
@@ -108,7 +108,7 @@ pnpm install
 pnpm run typecheck     # tsc --noEmit
 pnpm run build         # esbuild → lib/index.js + artifacts/sjs-worker.mjs
 pnpm test:all          # typecheck + build + worker-smoke + export-integrity + tool-smoke
-npm pack               # → dsh-spreadjs-excel-<version>.tgz
+npm pack               # → dsh-plugin-spreadjs-driver-<version>.tgz
 ```
 
 Install the tarball into a scratch profile and drive the tools from a real session to smoke-test end to end.

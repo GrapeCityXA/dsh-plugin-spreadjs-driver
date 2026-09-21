@@ -17,7 +17,10 @@ export const STAGE_DIR = WORKSPACE
 
 export const PLUGINS = [
   {
-    name: 'dsh-spreadjs-excel',
+    name: 'dsh-plugin-spreadjs-driver',
+    // The repo directory keeps its original name: it is a local path, not the
+    // package identity, and renaming it would break every script that reaches
+    // for it (this file, the .bat wrappers, anyone's shell history).
     repo: join(WORKSPACE, 'dsh-spreadjs-excel'),
     // Host-only plugin: useful in the headless profile too.
     profiles: ['sjs', 'web'],
