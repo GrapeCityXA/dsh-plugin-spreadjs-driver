@@ -1,8 +1,7 @@
 // Shared registry of the packages this workspace installs into local DSH profiles.
 //
-// Two kinds of entry:
-//   - `repo`     built and packed from that sibling repo on every install.
-//   - `registry` published package, pinned to a version, no local source.
+// An entry names a sibling repo that is built and packed from source on every
+// install.
 //
 // A repo that EXISTS but cannot be packed is a hard error, never a silent
 // fallback to the registry: installing the published copy while believing it is
@@ -22,8 +21,11 @@ export const PLUGINS = [
     // package identity, and renaming it would break every script that reaches
     // for it (this file, the .bat wrappers, anyone's shell history).
     repo: join(WORKSPACE, 'dsh-spreadjs-excel'),
-    // Host-only plugin: useful in the headless profile too.
-    profiles: ['sjs', 'web'],
+    // The web profile only. The plugin itself is host-only and would run fine in
+    // a headless profile, but nothing here targets one any more: the workspace
+    // keeps a single profile, so there is one place to look and one to keep
+    // clean.
+    profiles: ['web'],
     // Byte-compared against the repo after install.
     verify: ['lib/index.js', 'artifacts/sjs-worker.mjs'],
   },
@@ -34,26 +36,6 @@ export const PLUGINS = [
     // says a headless profile must not mount it.
     profiles: ['web'],
     verify: ['lib/index.js', 'lib/client.js'],
-  },
-  {
-    // Not ours, and not optional in practice: this is what mounts the sidebar
-    // that the editor registers its file viewer into. Without it the editor's
-    // `ctx.inject(['betterSidebar'])` never fires, so there is no sidebar and no
-    // way to open a workbook in the designer at all.
-    //
-    // Pinned, never floating. `@linxin666/dsh-web-all` raises its own
-    // `dsh.engines.dsh` floor between releases — it moved to `>= 0.1.5-rc.1` at
-    // 0.3.20 — so an unpinned install would one day pull a version this DSH
-    // cannot run and silently break the web profile. The pin records the newest
-    // release whose engine range the installed DSH actually satisfies.
-    //
-    // 0.3.23 is that release for DSH 0.1.5-rc.2 (every 0.3.20-0.3.23 requires
-    // >= 0.1.5-rc.1). Raising this pin means re-checking the engine range first,
-    // and raising DSH if the new floor demands it.
-    name: '@linxin666/dsh-web-all',
-    registry: '0.3.23',
-    profiles: ['web'],
-    verify: [],
   },
 ]
 

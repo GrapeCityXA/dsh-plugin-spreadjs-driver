@@ -1,6 +1,6 @@
 // Remove this workspace's plugins from local DSH profiles.
 //
-//   node scripts/uninstall-local.mjs [profile ...]      (default: sjs web)
+//   node scripts/uninstall-local.mjs [profile ...]      (default: web)
 //
 // The mirror of install-local.mjs, and it exists for the same two reasons:
 //
@@ -19,7 +19,7 @@ import os from 'node:os'
 import { PLUGINS } from './local-plugins.mjs'
 
 const DSH_HOME = process.env.DSH_HOME ?? join(os.homedir(), '.dsh')
-const profiles = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['sjs', 'web']
+const profiles = process.argv.slice(2).length > 0 ? process.argv.slice(2) : ['web']
 
 function run(command, args, cwd) {
   const isWindows = process.platform === 'win32'

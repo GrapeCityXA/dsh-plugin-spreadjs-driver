@@ -45,15 +45,13 @@ function fail(message) {
 const installable = []
 
 for (const plugin of PLUGINS) {
-  const manifest = plugin.repo === undefined ? undefined : readManifest(plugin.repo)
+  const manifest = readManifest(plugin.repo)
   if (manifest === undefined) {
-    // Registry entry, or a local repo that is genuinely absent. A pinned version
-    // is used verbatim — an unpinned name would resolve to latest, which for
-    // some packages is a version this DSH cannot run.
-    const spec = plugin.registry === undefined ? plugin.name : `${plugin.name}@${plugin.registry}`
-    console.log(`${plugin.name}: no local source — installing ${spec} from the registry`)
-    installable.push({ name: plugin.name, spec, repo: '', verify: [] })
-    continue
+    // Every entry is a local repo. A missing one is a hard error, never a
+    // fallback to the published package: the whole point of this script is that
+    // "what you just built" and "what the profile runs" are the same bytes, and
+    // a silent registry install breaks exactly that.
+    fail(`no plugin at ${plugin.repo} — its package.json is missing`)
   }
   if (!isBuildable(plugin.repo)) {
     fail(
@@ -102,19 +100,18 @@ for (const profile of profiles) {
 
   // One pnpm invocation per operation, never one per plugin.
   //
-  // Every pnpm call re-resolves the whole dependency graph — this profile
-  // carries ~227 packages once dsh-web-all is in place — and the old
-  // remove-one/add-one-per-plugin loop paid that cost once per plugin per
-  // profile (10 invocations). A slow registry turns each of those resolutions
-  // into a stall: metadata fetches retry with "Will retry in 1 minute", at 0%
-  // CPU, and interrupting one leaves the profile half-installed.
+  // Every pnpm call re-resolves the whole dependency graph — the web profile is
+  // large, and the two plugins here pull the whole SpreadJS stack — and a
+  // remove-one/add-one-per-plugin loop would pay that cost once per plugin. A
+  // slow registry turns each of those resolutions into a stall: metadata fetches
+  // retry with "Will retry in 1 minute", at 0% CPU, and interrupting one leaves
+  // the profile half-installed.
   //
   // `--prefer-offline` takes the network out of that resolution by trusting
   // cached metadata. It is accepted by `add` and NOT by `remove` — pnpm's remove
   // exposes no offline option at all, and passing the bare flag is a hard error
   // ("Unknown option: 'prefer-offline'"). So it goes on the add, which is also
-  // the expensive half: a measured remove re-resolved 11 packages, a measured
-  // add re-resolved all 227.
+  // the expensive half.
   const PREFER_OFFLINE = '--prefer-offline'
 
   // Which entries this profile should carry, and which it should not. A plugin
@@ -188,7 +185,6 @@ for (const profile of profiles) {
 
   // Byte-compare what was installed against what was just built.
   for (const entry of wanted) {
-    if (entry.repo === '') continue
     const installed = join(dir, 'node_modules', entry.name)
     let matches = true
     for (const relative of entry.verify) {
