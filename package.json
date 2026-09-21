@@ -1,8 +1,15 @@
 {
-  "name": "dsh-plugin-spreadjs-driver",
+  "name": "@grapecity-software/dsh-spreadjs-driver",
   "version": "1.0.0",
-  "description": "SpreadJS spreadsheets for DeepSeek Harness (DSH): import/export Excel, formula recalculation, execution fallback and PDF export through headless workers.",
+  "description": "SpreadJS spreadsheets for DeepSeek Harness (DSH): create, import, edit, export and screenshot .xlsx workbooks — and edit the workbook the user has open in a SpreadJS designer.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GrapeCityXA/dsh-plugin-spreadjs-driver.git"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",

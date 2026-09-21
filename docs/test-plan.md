@@ -1,4 +1,4 @@
-# 测试计划 · dsh-plugin-spreadjs-driver 1.0
+# 测试计划 · @grapecity-software/dsh-spreadjs-driver 1.0
 
 `pnpm run ci`（worker-smoke + **export-integrity** + tool-smoke + live/client/confinement + pack 校验 + 从 pack 冒烟）是无 LLM 的
 **回归网**；`docs/e2e-checklist.md` 是发版前的**人工验收**。本文是两者的补充：按

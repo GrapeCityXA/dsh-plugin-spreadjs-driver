@@ -12,7 +12,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const BUNDLE = fileURLToPath(new URL('../lib/client.js', import.meta.url))
-const PACKAGE_NAME = 'dsh-plugin-spreadjs-driver'
+const PACKAGE_NAME = '@grapecity-software/dsh-spreadjs-driver'
+// The plugin's own `name` export is deliberately the SHORT name, not the scoped
+// package name — it is the cordis plugin identity, and it matches what the
+// editor plugin does (`@grapecity-software/dsh-spreadjs-editor` exports
+// `dsh-spreadjs-editor`). Only the client-module registration `id` is the
+// package name. The two are separate claims and are asserted separately.
+const PLUGIN_NAME = 'dsh-spreadjs-driver'
 const BRIDGE_SERVICE = 'spreadjsHostBridge'
 
 function assert(condition, message) {
@@ -159,7 +165,7 @@ async function run() {
   })()
 
   await step('apply() publishes the bridge and starts the live loop', () => {
-    assert(client.name === PACKAGE_NAME, `wrong plugin name: ${client.name}`)
+    assert(client.name === PLUGIN_NAME, `wrong plugin name: ${client.name}`)
     assert(typeof client.apply === 'function', 'the bundle exports no apply()')
     const connection = fakeConnection()
     const ctx = fakeContext(connection)

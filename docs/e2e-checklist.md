@@ -10,8 +10,8 @@
 
 | 项 | 期望 | 核对命令 |
 |---|---|---|
-| 打包并重装进 `spjs` profile | tarball 9 文件、44.7kB 级 | `npm pack`；`dsh plugin --profile spjs add ./dsh-plugin-spreadjs-driver-<ver>.tgz` |
-| patch 层生效 | dump 出现 `# == dsh-plugin-spreadjs-driver` | `dsh --profile spjs --dump-config` |
+| 打包并重装进 `spjs` profile | tarball 9 文件、44.7kB 级 | `npm pack`；`dsh plugin --profile spjs add ./grapecity-software-dsh-spreadjs-driver-<ver>.tgz` |
+| patch 层生效 | dump 出现 `# == @grapecity-software/dsh-spreadjs-driver` | `dsh --profile spjs --dump-config` |
 | 工具可枚举 | `sjs_new/import/export/status/execute/screenshot/worktree` | profile 会话 `/tools` 或 settings |
 | 工作区含 fixture | 两份真实形状 xlsx | `node scripts/make-fixtures.mjs` 后拷到会话 data/ |
 | 中文字体（PDF/PNG 可选） | 至少一个 .ttf/.otf 非 .ttc | 有 Windows 字体即满足；否则 `GC_SJS_PDF_FONT_DIRS` |
