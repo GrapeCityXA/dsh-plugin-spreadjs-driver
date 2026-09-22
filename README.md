@@ -109,30 +109,49 @@ return { total: s.getValue(5, 1) }
 
 See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, and the error-code recovery table, and `docs/architecture.md` for how the engine runtime is embedded.
 
-## Extending another SpreadJS plugin
+## Being driven by a designer: the `spreadjsBridgeRegistry`
 
-The `sjs_*` tools are only half of what this plugin is. The other half is one client
-service — `spreadjsHostBridge` — and it exists so that **any DSH plugin already
-rendering a SpreadJS workbook can lend that workbook to the agent**, and get
-natural-language editing of its own live document without writing any agent code.
+The `sjs_*` tools are only half of what this plugin is. The other half is what makes
+it a *bridge*: the editor plugin publishes a roster of bridges, a plugin that can
+drive a live workbook registers into it, and **the user picks which one to use in
+Settings → SpreadJS**. This plugin is one entry on that roster.
 
-What makes it work is that a DSH client plugin's browser half is not a sandbox.
-Every plugin's client half is loaded into the same page, the same JS realm, the same
-heap, so the workbook crosses as a **reference, not a copy**. Nothing is serialized,
-nothing goes over HTTP, no file is involved. The owner keeps rendering the very
-object the agent just wrote to, so the change is on screen the moment it lands — and
+What makes the arrangement work is that a DSH client plugin's browser half is not a
+sandbox. Every plugin's client half is loaded into the same page, the same JS realm,
+the same heap, so a workbook crosses as a **reference, not a copy**. Nothing is
+serialized, nothing goes over HTTP, no file is involved. The owner keeps rendering the
+very object the agent wrote to, so the change is on screen the moment it lands — and
 because it lands on the live document, it does not clobber edits the user has not
 saved, which a file-based route cannot promise.
+
+### Why a registry, and not a service name
+
+This was `spreadjsHostBridge`: a service this plugin published and the editor injected
+by name. That works for exactly one bridge, structurally — a second `provide` of a
+live service name **throws**, and because the throw lands inside the second plugin's
+`apply`, that plugin never activates at all. There is no chain, no last-wins, no
+fan-out: `get`/`inject` see one value. (Empirically: none of the 239 packages in a
+shipped DSH tree shares a service name with another.) So "let the user choose" could
+not be built that way.
+
+It is built the way DSH builds every other many-contributors feature — `ctx.tools`,
+`ctx.llm.registerAdapter`, `ctx.slots` — as one service that many plugins register
+*into*. A registry has to be published by somebody, and the **editor** is the party
+that owns the workbook, so it owns the list of who may be handed that workbook. The
+dependency therefore runs provider → editor. That is the honest description of the
+relationship: a bridge is a consumer of the editor's workbooks. It stays optional — a
+profile without the editor simply never fires the injection.
 
 ### The contract
 
 ```ts
 // your-plugin/src/client/index.ts
-const BRIDGE_SERVICE = 'spreadjsHostBridge'
+const REGISTRY = 'spreadjsBridgeRegistry'
 
-interface SpreadjsHostBridge {
+interface SpreadjsBridgeEntry {
+  readonly id: string                   // unique in the registry; shown as the entry key
+  readonly title: () => string          // the name the Settings page lists
   attach(provider: SpreadjsWorkbookProvider): () => void
-  list(): readonly string[]
 }
 
 interface SpreadjsWorkbookProvider {
@@ -144,18 +163,20 @@ interface SpreadjsWorkbookProvider {
 }
 
 export function apply(ctx: ClientContext): void {
-  ctx.inject([BRIDGE_SERVICE], (child) => {
+  ctx.inject([REGISTRY], (child) => {
     child.effect(() => {
-      const bridge = child.get(BRIDGE_SERVICE) as SpreadjsHostBridge | undefined
-      if (bridge === undefined) return
-      const release = bridge.attach({
-        id: 'my-designer',
-        getWorkbook: () => workbookRef.current,
-        getNamespace: () => GC,
-        getActivePath: () => pathRef.current,
-        save: () => persistToDisk(),
+      const registry = child.get(REGISTRY) as SpreadjsBridgeRegistry | undefined
+      if (registry === undefined) return
+      return registry.register({
+        id: '@acme/dsh-spreadjs-bridge',
+        title: () => 'Acme Bridge',
+        attach(provider) {
+          // the editor hands you a live workbook; keep the reference, and release
+          // it when the function you return is called
+          held = provider
+          return () => { held = undefined }
+        },
       })
-      return () => release()          // MUST run when your panel unmounts
     }, 'my-plugin: spreadjs bridge')
   })
 }
@@ -178,17 +199,24 @@ explicitly asks for a save, which is the only thing that calls your `save()`. Th
 default is deliberate: the agent should be able to propose a change the user can see
 and undo before anything is written.
 
+**These tools are conditional.** Every tool this plugin registers — the seven file tools,
+the two live ones, and its bundled skill — exists only while this plugin is the chosen
+bridge. Choose someone else in Settings → SpreadJS and they all step aside, because the
+setting names the plugin that *owns spreadsheets* here, not merely the one holding the
+live document. The bridge layer is a hard constraint the editor enforces; the tool layer
+is an agreement each driver keeps on its own — see *Writing your own driver* below.
+
 ### What this deliberately does not do
 
-- **`attach` does not go both ways.** The bridge publishes a way to *offer* a workbook,
-  never a way to *reach* one. A third plugin that obtains this service can only offer a
-  document it already owns; it cannot see, find or edit yours.
-- **The service exists only in the browser.** There is deliberately no host-side
-  `spreadjsHostBridge`, so a Node-side plugin cannot borrow this engine to run SpreadJS
-  on the server.
-- **Nothing is required of you.** `ctx.inject` does not fire when this plugin is absent,
-  so your plugin behaves exactly as before without it — and the disposer `attach`
-  returns releases the reference on unmount, so a destroyed document is never kept alive.
+- **The roster is candidates, not a broadcast.** Exactly one entry is handed the live
+  document — the one the user selected — and the editor remains the gatekeeper. There
+  is no way for a plugin to *reach* a workbook it was not handed.
+- **The registry exists only in the browser.** There is deliberately no host-side
+  equivalent, so a Node-side plugin cannot borrow the SpreadJS engine to run it on the
+  server.
+- **Nothing is required of you.** `ctx.inject` does not fire when the editor is absent,
+  so your plugin behaves exactly as before without it — and the disposer `register`
+  returns releases the entry on unload, so a destroyed document is never kept alive.
 
 `@grapecity-software/dsh-spreadjs-editor` **0.1.5 or later** is the reference consumer: its
 `src/client/bridge.ts` is this contract in full, and `docs/design-live-designer-bridge.md`
@@ -198,6 +226,121 @@ erroring, so `sjs_live_execute` would simply never find a designer.
 
 > `subscribe` is declared on the provider interface but is not consulted by the bridge
 > yet; implementing it currently has no effect.
+
+## Writing your own driver
+
+Registering a bridge entry buys you the workbook. It does not buy you the model's
+attention — the tool catalog is a separate layer that nothing arbitrates. Two drivers
+installed at once means two overlapping tool sets in front of the model with nothing
+saying which one goes with the choice on screen. Closing that gap takes two things
+from you.
+
+### 1. Provide your own tools
+
+`ctx.tools.register()` is per-plugin: the names you register are yours, and the catalog
+the model sees is the **union** of every installed plugin's. A bridge entry with no
+tools behind it hands the model a live workbook it has no way to touch.
+
+| tool | | what it must do |
+|---|---|---|
+| `sjs_live_execute` | **required** | run agent-authored code against the workbook the editor handed you |
+| `sjs_live_status` | strongly recommended | answer "is a designer connected right now" — without it, the model learns this by failing |
+| `sjs_new` `sjs_import` `sjs_export` `sjs_status` `sjs_execute` `sjs_screenshot` `sjs_worktree` | only if you ship headless equivalents | operate over workspace files, with no browser involved |
+| a `skill` describing those tools | if you ship one | tell the model how to use them — and withdraw it with them (see *Yield* below) |
+
+Two rules about names:
+
+- **Pick a prefix you own.** `ctx.tools.register` throws on a duplicate name, and the
+  throw lands inside your `apply` — one collision and your plugin does not activate at
+  all. This plugin owns `sjs_`; the fixture in `dsh-plugin-fake-driver` uses `fake_sjs_`
+  for exactly this reason.
+- **Do not re-register the set above under different names.** Ten tools describing the
+  same workbook leave the model choosing between two catalogs, which is the problem the
+  yield protocol exists to remove.
+
+### 2. Yield when the user picks someone else
+
+The editor writes the chosen id into its own settings namespace. Read it, and let it
+decide whether your tools exist:
+
+```ts
+// your-plugin/src/host/presence.ts
+const EDITOR_NAMESPACE = 'spreadjs-editor'
+const MINE = '@acme/dsh-spreadjs-bridge'
+
+let release: (() => void) | undefined
+
+/** Presence is a pure function of the choice — never a state you enter and must leave. */
+function sync(ctx: Context, register: () => () => void): void {
+  const chosen = read(ctx)                     // every failure → undefined
+  const want = chosen === undefined || chosen === '' || chosen === MINE
+  if (want === (release !== undefined)) return // already right; re-registering churns the catalog
+  if (want) release = register()
+  else { release?.(); release = undefined }
+}
+
+export function apply(ctx: Context): void {
+  ctx.effect(() => {
+    const onDocument = ctx.on('settings/document-updated', (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
+    const onUpdated  = ctx.on('settings/updated',          (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
+    sync(ctx, register)
+    return () => { onDocument(); onUpdated(); release?.(); release = undefined }
+  }, 'acme-bridge: tool presence follows the chosen bridge')
+
+  // The settings service may come up after you; namespace registration emits no event.
+  ctx.inject(['settings'], () => sync(ctx, register))
+}
+```
+
+`src/host/activation.ts` in this repo is the same thing with the reasoning written out,
+and `test/activation.mjs` is the behaviour it has to have.
+
+The rules that matter:
+
+- **Read the choice, don't guess it.** `spreadjs-editor.bridge` is the one field. Reach
+  it through `ctx.get('settings')` rather than injection if you want it readable from
+  any callback.
+- **Derive, never remember.** The tempting shape is "unregister while A is chosen, then
+  re-register when A goes away" — which needs something to remember to put you back, and
+  whatever remembers can be lost to a reload, a crash, or an unload. Make presence a pure
+  function of the current value and re-derive it on every event, and there is no state
+  left to desynchronise.
+- **Gate every tool you ship, not just the live ones.** The setting names the plugin that
+  **owns spreadsheets** in this deployment, not merely the one that receives the live
+  document. Keeping file tools in the catalog while the user has chosen someone else puts
+  the model back to guessing. This plugin gates all nine of its tools.
+- **Gate anything else you put in front of the model.** This plugin also withdraws its
+  bundled `spreadjs` skill, and that is not a detail: SKILL.md is the document that
+  teaches the model to call `sjs_*` by name, so leaving it registered after the tools are
+  gone hands the model a manual for a capability it does not have. A stale skill is worse
+  than a redundant tool — it reads as authoritative.
+- **Fail open.** No settings service, an unregistered namespace, a value that is not a
+  string — all of them mean *present*. The two failures are not symmetrical: being absent
+  when the user needed you costs them their tools, while being present with nothing to do
+  costs one line in a catalog.
+- **Listen to both events, filtered by namespace.** `settings/document-updated` is the one
+  that fires when a choice is **cleared** back to its default — a change `settings/updated`
+  swallows, because the resolved value is unchanged. And the `inject(['settings'])` pass
+  closes the window where the service arrives after you and the choice was already made.
+- **Leave the roster entry alone.** Yield your *tools*, not your bridge entry. That entry
+  is what the user needs on the settings page to switch back, so unregistering it makes
+  the choice one-way.
+- **Say nothing, and expect nothing back.** You read a fact, you decide, you act on
+  yourself. You never need the other driver's name, its existence, or its cooperation.
+
+### What you cannot rely on
+
+**Reciprocity.** The bridge layer is a hard constraint — the editor hands the live
+workbook to exactly one entry, and the editor enforces that. The tool layer is an
+*agreement*, and nothing enforces it. A driver that ignores the setting keeps its tools
+in the catalog, and the symptom is precisely the one this protocol removes: two
+overlapping tool sets, and a model picking between them by guesswork. Yielding
+unilaterally is still worth doing — it costs you nothing and removes half the problem on
+your own — but the user only gets the correct outcome when both drivers do it.
+
+`dsh-plugin-fake-driver` in this workspace exists to make that observable: it is a second
+driver that yields like this one, and `build_fake.bat` installs it alongside. Install
+both, pick one in Settings → SpreadJS, and watch which tools are left in the catalog.
 
 ## Notes
 

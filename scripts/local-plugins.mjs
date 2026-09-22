@@ -37,6 +37,23 @@ export const PLUGINS = [
     profiles: ['web'],
     verify: ['lib/index.js', 'lib/client.js'],
   },
+  {
+    // A TEST FIXTURE: a second driver plugin, so "two drivers installed" can be
+    // exercised for real rather than reasoned about. It registers a bridge into
+    // the editor's roster and three `fake_sjs_*` tools that do nothing.
+    //
+    // Opt in with DSH_FAKE_DRIVER=1. With the variable unset it targets no
+    // profile, which this script reads as "must not be in any of them" and
+    // uninstalls it — so a plain `build.bat` is also the way to remove it.
+    //
+    // The entry stays here rather than being deleted once the testing is done:
+    // a name that disappears from this list is a name the uninstall path can no
+    // longer clean up, since it only knows the names it is given.
+    name: 'dsh-plugin-fake-driver',
+    repo: join(WORKSPACE, 'dsh-plugin-fake-driver'),
+    profiles: process.env.DSH_FAKE_DRIVER === '1' ? ['web'] : [],
+    verify: ['lib/index.js', 'lib/client.js'],
+  },
 ]
 
 /** npm's tarball filename for a package: scope stripped, slash to dash. */

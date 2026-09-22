@@ -100,26 +100,41 @@ return { total: s.getValue(5, 1) }
 
 完整的工具地图、执行环境契约与错误码恢复表见 `skills/spreadjs/SKILL.md`；引擎运行时的嵌入方式见 `docs/architecture.md`。
 
-## 让别的 SpreadJS 插件用上我们
+## 被设计器驱动：`spreadjsBridgeRegistry`
 
-`sjs_*` 那些工具只是这个插件的一半。另一半是一个客户端服务——`spreadjsHostBridge`。
-它存在的意义是：**任何一个已经在页面上渲染 SpreadJS 工作簿的 DSH 插件，都可以把那份工作簿
-借给 Agent**，从而白得一个「用自然语言改自己那份活文档」的能力，一行 Agent 代码都不用写。
+`sjs_*` 那些工具只是这个插件的一半。另一半是它作为**桥**的身份：编辑器插件发布一份"桥"的
+名册，有能力驱动活工作簿的插件注册进去，**用户在 设置 → SpreadJS 里选用哪一个**。本插件
+就是名册上的一项。
 
 之所以成立，是因为 DSH 客户端插件的浏览器半**不是沙箱**：所有插件的客户端半被加载进同一个
 页面、同一个 JS realm、同一个堆，所以工作簿是**以引用而非副本**过去的。不序列化、不走 HTTP、
 不落文件。宿主插件继续渲染的就是 Agent 刚写过的那个对象，改动落地即上屏；而且因为它落在
 活文档上，**不会覆盖用户尚未保存的编辑**——这一点是按文件走的路子给不了的。
 
+### 为什么是名册，不是服务名
+
+原来是 `spreadjsHostBridge`：本插件发布它，编辑器按名字注入。那种形状**结构性**地只允许
+一个桥——第二次 `provide` 一个已存在的服务名会**抛错**，而抛错发生在第二个插件的 `apply`
+里，所以那个插件根本装不上。没有成链、没有后者覆盖、没有扇出：`get`/`inject` 只看得到一个值。
+（实证：一份完整 DSH 树里的 239 个包，没有任何两个共用一个服务名。）所以"让用户选"用那种
+形状做不出来。
+
+它要按 DSH 处理所有"多方贡献"的方式来做——`ctx.tools`、`ctx.llm.registerAdapter`、
+`ctx.slots`——即**一个服务，多方注册进去**。名册总得有人发布，而**编辑器**是握着工作簿的
+那一方，所以它拥有"谁可以拿到这份工作簿"的名单。于是依赖方向变成 **提供方 → 编辑器**。
+这是这段关系诚实的描述：桥本来就是编辑器工作簿的消费者。依赖仍然是可选的——没有编辑器时
+注入不会触发。
+
 ### 契约
 
 ```ts
 // 你的插件/src/client/index.ts
-const BRIDGE_SERVICE = 'spreadjsHostBridge'
+const REGISTRY = 'spreadjsBridgeRegistry'
 
-interface SpreadjsHostBridge {
+interface SpreadjsBridgeEntry {
+  readonly id: string                   // 名册内唯一；也是条目键
+  readonly title: () => string          // 设置页上显示的名字
   attach(provider: SpreadjsWorkbookProvider): () => void
-  list(): readonly string[]
 }
 
 interface SpreadjsWorkbookProvider {
@@ -131,18 +146,19 @@ interface SpreadjsWorkbookProvider {
 }
 
 export function apply(ctx: ClientContext): void {
-  ctx.inject([BRIDGE_SERVICE], (child) => {
+  ctx.inject([REGISTRY], (child) => {
     child.effect(() => {
-      const bridge = child.get(BRIDGE_SERVICE) as SpreadjsHostBridge | undefined
-      if (bridge === undefined) return
-      const release = bridge.attach({
-        id: 'my-designer',
-        getWorkbook: () => workbookRef.current,
-        getNamespace: () => GC,
-        getActivePath: () => pathRef.current,
-        save: () => persistToDisk(),
+      const registry = child.get(REGISTRY) as SpreadjsBridgeRegistry | undefined
+      if (registry === undefined) return
+      return registry.register({
+        id: '@acme/dsh-spreadjs-bridge',
+        title: () => 'Acme Bridge',
+        attach(provider) {
+          // 编辑器把一份活工作簿交过来；留住这个引用，并在返回的函数被调用时释放它
+          held = provider
+          return () => { held = undefined }
+        },
       })
-      return () => release()          // 面板卸载时**必须**调用
     }, 'my-plugin: spreadjs bridge')
   })
 }
@@ -162,22 +178,122 @@ export function apply(ctx: ClientContext): void {
 `save()` 的路径。这个默认值是刻意的：Agent 应当能先提出一个用户看得见、撤得回的改动，
 再谈落盘。
 
+**这些工具是有条件的。** 本插件注册的所有东西——七个文件工具、两个 live 工具、以及自带的
+skill——都只在**本插件是被选中的桥**时存在。在 设置 → SpreadJS 里选了别人，它们会一起让位，
+因为这个 setting 命名的是**在此拥有电子表格**的插件，而不只是拿着活文档的那个。桥那一层是
+编辑器执行的硬约束，工具那一层是每个 driver 各自遵守的约定——见下面的《自己实现一个 driver》。
+
 ### 有几件事是刻意不做的
 
-- **`attach` 不是双向的。** 这个桥只公开「**交出**工作簿」的方式，从不公开「**够到**工作簿」的
-  方式。第三方插件即使拿到这个服务，也只能交出它本来就拥有的文档，看不见、也找不到、更改不了
-  你的。
-- **这个服务只存在于浏览器。** host 侧刻意**没有** `spreadjsHostBridge`，所以 Node 侧插件
-  无法借这个引擎在服务端跑 SpreadJS。
-- **对你没有任何强制要求。** 本插件不在场时 `ctx.inject` 不会触发，你的插件行为与从前完全一致；
-  而 `attach` 返回的注销句柄会在卸载时释放引用，被销毁的文档不会被吊着不放。
+- **名册是候选名单，不是广播。** 只有**一个**条目会拿到活文档——用户选中的那个——而编辑器
+  始终是看门人。插件没有任何办法**够到**一份没被交给它的工作簿。
+- **这个名册只存在于浏览器。** host 侧刻意**没有**对应物，所以 Node 侧插件无法借这个引擎在
+  服务端跑 SpreadJS。
+- **对你没有任何强制要求。** 编辑器不在场时 `ctx.inject` 不会触发，你的插件行为与从前完全
+  一致；而 `register` 返回的注销句柄会在卸载时释放条目，被销毁的文档不会被吊着不放。
 
-`@grapecity-software/dsh-spreadjs-editor`（**0.1.5 及以上**）就是示范消费方：它的
-`src/client/bridge.ts` 是这份契约的完整写法，依赖方向为什么是这样，记在
-`docs/design-live-designer-bridge.md`。版本下限是有意义的——更早的编辑器里根本没有这个桥，
-联动会**静默缺席**而不是报错，`sjs_live_execute` 只是永远找不到设计器。
+`@grapecity-software/dsh-spreadjs-editor`（**0.1.5 及以上**）就是示范消费方：名册由它发布，
+它的 `src/client/bridge-registry.ts` 是契约的完整定义，`docs/design-live-designer-bridge.md`
+记着这段历史。版本下限是有意义的——更早的编辑器里根本没有这个名册，联动会**静默缺席**而不是
+报错，`sjs_live_execute` 只是永远找不到设计器。
 
 > `subscribe` 目前只在 provider 接口上声明了，桥还没有读它——实现了也不会有效果。
+
+## 自己实现一个 driver
+
+在名册里注册一个条目，买到的是**工作簿**，买不到**模型的注意力**——工具清单是另一层，没有
+任何东西在仲裁它。两个 driver 同时装着，就是两套重叠的工具并排摆在模型面前，而屏幕上选的是
+谁、哪一套配它，没有任何东西说得清。要补上这个缺口，需要你做两件事。
+
+### 一、提供你自己的工具
+
+`ctx.tools.register()` 是**按插件**的：你注册的名字归你，而模型看到的清单是**所有已安装插件
+的并集**。一个光有名册条目、背后没有工具的桥，等于把一份活工作簿交给模型却不让它碰。
+
+| 工具 | | 必须做到什么 |
+|---|---|---|
+| `sjs_live_execute` | **必需** | 对编辑器交给你的工作簿执行 Agent 写的代码 |
+| `sjs_live_status` | 强烈建议 | 回答"现在有没有设计器连着"——没有它，模型只能靠失败来发现这件事 |
+| `sjs_new` `sjs_import` `sjs_export` `sjs_status` `sjs_execute` `sjs_screenshot` `sjs_worktree` | 仅当你也有无头实现时 | 在workspace 文件上操作，不涉及浏览器 |
+| 一份描述这些工具的 `skill` | 如果你提供的话 | 教模型怎么用它们——并且跟着工具一起撤下（见下面的《让位》） |
+
+关于命名有两条规矩：
+
+- **用一个你自己占住的前缀。** `ctx.tools.register` 遇到重名会**抛错**，而这个抛错落在你的
+  `apply` 里——一次撞名，你的插件根本不会激活。本插件占 `sjs_`，夹具
+  `dsh-plugin-fake-driver` 用 `fake_sjs_` 正是因为这个。
+- **不要换个名字把上面这套再注册一遍。** 十个工具描述同一份工作簿，等于让模型在两份清单之间
+  选，而这正是让位协议要消掉的问题。
+
+### 二、用户选了别人时让位
+
+编辑器把选中的 id 写进它自己的 settings 命名空间。读它，让它决定你的工具在不在：
+
+```ts
+// 你的插件/src/host/presence.ts
+const EDITOR_NAMESPACE = 'spreadjs-editor'
+const MINE = '@acme/dsh-spreadjs-bridge'
+
+let release: (() => void) | undefined
+
+/** 在场与否是"当前选择"的纯函数——绝不是你进入、又必须离开的一个状态。 */
+function sync(ctx: Context, register: () => () => void): void {
+  const chosen = read(ctx)                     // 任何失败都返回 undefined
+  const want = chosen === undefined || chosen === '' || chosen === MINE
+  if (want === (release !== undefined)) return // 已经对了；重复注册会搅动工具清单
+  if (want) release = register()
+  else { release?.(); release = undefined }
+}
+
+export function apply(ctx: Context): void {
+  ctx.effect(() => {
+    const onDocument = ctx.on('settings/document-updated', (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
+    const onUpdated  = ctx.on('settings/updated',          (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
+    sync(ctx, register)
+    return () => { onDocument(); onUpdated(); release?.(); release = undefined }
+  }, 'acme-bridge: tool presence follows the chosen bridge')
+
+  // settings 服务可能在你之后才起来；命名空间注册不会发事件。
+  ctx.inject(['settings'], () => sync(ctx, register))
+}
+```
+
+本仓库的 `src/host/activation.ts` 是同一件事加上写全了的理由，`test/activation.mjs` 是它必须
+具备的行为。
+
+真正要紧的几条：
+
+- **读选择，别猜。** 就 `spreadjs-editor.bridge` 这一个字段。想在任何回调里都读得到，就走
+  `ctx.get('settings')` 而不是注入。
+- **派生，不要记忆。** 最容易写错的样子是"选中 A 时注销、A 走了再注册回来"——这需要一个东西
+  记着把你放回来，而那个东西可能丢（刷新、崩溃、卸载）。把在场做成当前值的纯函数、每个事件
+  都重新派生一次，就没有状态可失同步。
+- **你发的每个工具都要 gate，不只是 live 那几个。** 这个 setting 命名的是**在此部署中拥有
+  电子表格**的插件，而不只是"接收活文档"的那个。用户在别处选了别人、你还把文件工具留在清单
+  里，模型就又回到猜的状态。本插件把九个工具全 gate 了。
+- **你摆在模型面前的别的东西，也要一起 gate。** 本插件连同自带的 `spreadjs` skill 一起撤下，
+  这不是细节：SKILL.md 就是教模型按名字调用 `sjs_*` 的那份文档，工具都撤了还留着它，等于递给
+  模型一本它没有的能力的说明书。过期的 skill 比多余的工具更糟——它读起来是权威的。
+- **失败往"在场"倒。** 没有 settings 服务、命名空间没注册、值不是字符串——一律算**在场**。
+  两种失败不对称：需要你时你不在，代价是用户失去工具；没事可做时你在，代价是清单里多一行。
+- **两个事件都听，按命名空间过滤。** `settings/document-updated` 才是选择被**清回默认值**时
+  触发的那个——`settings/updated` 会因为解析后的值没变而吞掉这次变化。而 `inject(['settings'])`
+  那一遍，补的是"服务在你之后才起来、而选择早已做出"的那扇窗。
+- **别动名册条目。** 让位让的是**工具**，不是你的桥条目。用户要靠在设置页上看到那个条目才能
+  切回来，注销它等于把选择变成单向的。
+- **不打招呼，也不指望回应。** 你读一个事实、自己判断、作用在自己身上。你永远不需要知道另一个
+  driver 叫什么、在不在、配不配合。
+
+### 你不能指望的东西
+
+**对等回报。** 桥那一层是**硬约束**——活工作簿只会交给一个条目，而且是编辑器在把关。工具这一层
+是**约定**，没有东西在执行它。无视这个 setting 的 driver 照样把工具留在清单里，症状恰好就是这
+套协议要消掉的那个：两套重叠的工具，模型靠猜在它们之间选。单方面让位仍然值得做——它不花你什么，
+靠自己就消掉一半问题——但用户要拿到正确的结果，得两个 driver 都这么做。
+
+本 workspace 里的 `dsh-plugin-fake-driver` 就是为了让这件事**看得见**：它是第二个 driver，
+让位方式和本插件一样，`build_fake.bat` 把它和另外两个一起装上。装好、在 设置 → SpreadJS
+里选一个，看清单里剩下哪些工具。
 
 ## 说明
 
