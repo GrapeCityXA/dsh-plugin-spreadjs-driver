@@ -19,7 +19,7 @@ const PACKAGE_NAME = '@grapecity-software/dsh-spreadjs-driver'
 // `dsh-spreadjs-editor`). Only the client-module registration `id` is the
 // package name. The two are separate claims and are asserted separately.
 const PLUGIN_NAME = 'dsh-spreadjs-driver'
-const BRIDGE_SERVICE = 'spreadjsHostBridge'
+const BRIDGE_REGISTRY_SERVICE = 'spreadjsBridgeRegistry'
 
 function assert(condition, message) {
   if (!condition) throw new Error(`assertion failed: ${message}`)
@@ -79,13 +79,34 @@ function fakeWorkbook() {
   }
 }
 
+/**
+ * Stands in for the registry the EDITOR publishes. The driver registers an entry
+ * into this; the editor (played by the test) decides when to hand over a
+ * workbook.
+ */
+function fakeRegistry() {
+  const entries = new Map()
+  return {
+    register(entry) {
+      entries.set(entry.id, entry)
+      return () => { entries.delete(entry.id) }
+    },
+    list() { return [...entries.values()] },
+    subscribe() { return () => {} },
+    selected() { return undefined },
+    current() { return undefined },
+    select() {},
+    /** The entry this plugin registered — what the editor would be offered. */
+    get entry() { return [...entries.values()][0] },
+  }
+}
+
 /** A cordis client context reduced to the verbs the half uses. */
-function fakeContext(connection) {
-  const provided = new Map()
+function fakeContext(connection, registry) {
   const disposers = []
   const pendingInjections = []
+  const services = { connection, spreadjsBridgeRegistry: registry }
   return {
-    provide(name, value) { provided.set(name, value) },
     effect(callback) {
       const dispose = callback()
       if (typeof dispose === 'function') disposers.push(dispose)
@@ -98,13 +119,12 @@ function fakeContext(connection) {
     activate() {
       for (const { callback } of pendingInjections) {
         callback({
-          get: (name) => (name === 'connection' ? connection : undefined),
+          get: (name) => services[name],
           effect: (cb) => { const d = cb(); if (typeof d === 'function') disposers.push(d) },
         })
       }
       pendingInjections.length = 0
     },
-    get provided() { return provided },
     get disposers() { return disposers },
   }
 }
@@ -164,29 +184,43 @@ async function run() {
     assert(typeof registration.factory === 'function', 'the registration carries no factory')
   })()
 
-  await step('apply() publishes the bridge and starts the live loop', () => {
+  await step('apply() registers an entry into the editor roster, and nothing else', () => {
     assert(client.name === PLUGIN_NAME, `wrong plugin name: ${client.name}`)
     assert(typeof client.apply === 'function', 'the bundle exports no apply()')
     const connection = fakeConnection()
-    const ctx = fakeContext(connection)
+    const registry = fakeRegistry()
+    const ctx = fakeContext(connection, registry)
+    // Registered for disposal: `activate()` also starts the live loop, and a
+    // loop left running holds a timer open for the life of the process.
+    contexts.push(ctx)
     client.apply(ctx)
 
-    const bridge = ctx.provided.get(BRIDGE_SERVICE)
-    assert(bridge !== undefined, `${BRIDGE_SERVICE} was not provided`)
-    assert(typeof bridge.attach === 'function' && typeof bridge.list === 'function', 'bridge surface is wrong')
-    // The way to *act* on a workbook must not be published: a third-party client
-    // plugin holding this service can offer its own document, never edit someone
-    // else's.
-    assert(!('execute' in bridge), 'the bridge publishes a way to run code on an attached workbook')
-    assert(client.executeAttached === undefined || !('executeAttached' in bridge), 'executeAttached leaked onto the bridge')
+    // Nothing happens until the editor actually exists: the entry is registered
+    // when its registry arrives, which is what keeps this half optional.
+    assert(registry.entry === undefined, 'the entry was registered before any roster existed')
+
+    ctx.activate()
+
+    const entry = registry.entry
+    assert(entry !== undefined, 'no entry was registered into the roster')
+    assert(entry.id === '@grapecity-software/dsh-spreadjs-driver', `wrong entry id: ${entry.id}`)
+    assert(typeof entry.title === 'function' && typeof entry.title() === 'string', 'the entry has no title')
+    assert(typeof entry.attach === 'function', 'the entry cannot accept a workbook')
+    // The way to *act* on a workbook must not be offered to the roster: an entry
+    // is an inbox, never a handle on somebody else's document.
+    assert(!('execute' in entry), 'the entry publishes a way to run code on an attached workbook')
+    assert(!('list' in entry), 'the entry exposes the attached roster it does not own')
+    assert(client.executeAttached === undefined, 'executeAttached leaked out of the bundle')
   })()
 
   // --- one long-lived fixture for the loop tests -----------------------------
   const connection = fakeConnection()
-  const ctx = fakeContext(connection)
+  const registry = fakeRegistry()
+  const ctx = fakeContext(connection, registry)
   contexts.push(ctx)
   client.apply(ctx)
-  const bridge = ctx.provided.get(BRIDGE_SERVICE)
+  ctx.activate()
+  const entry = registry.entry
 
   const workbook = fakeWorkbook()
   let saves = 0
@@ -203,15 +237,17 @@ async function run() {
   }
 
   let release
-  await step('an attached workbook is offered to the host, and only while attached', async () => {
-    release = bridge.attach(provider)
-    assert(JSON.stringify(bridge.list()) === JSON.stringify(['spreadjs-designer']), 'attach did not register')
-    ctx.activate()
+  await step('a workbook handed over by the editor makes the tab offer itself', async () => {
+    // Before the editor hands anything over, the tab has nothing to offer and
+    // does not poll at all — which is what keeps this half free in a page with
+    // no designer open. The poll count is the observable; the driver publishes
+    // no roster of what it holds.
+    const idle = connection.polls
 
-    await until(() => connection.polls > 0, 'the first poll')
-    // The loop reports what it can serve, which is what lets the host fail fast
-    // instead of timing out when nobody has the document it wants.
-    await until(() => connection.results.length >= 0 && connection.polls > 0, 'a poll to inspect')
+    release = entry.attach(provider)
+    assert(typeof release === 'function', 'attach returned no way to release the workbook')
+
+    await until(() => connection.polls > idle, 'the first poll')
   })()
 
   await step('a job runs against the LIVE workbook and its result goes back', async () => {
@@ -272,11 +308,14 @@ async function run() {
     const broken = fakeConnection()
     let attempts = 0
     broken.rpc.call = async () => { attempts += 1; throw new Error('connection refused') }
-    const brokenCtx = fakeContext(broken)
+    const brokenRegistry = fakeRegistry()
+    const brokenCtx = fakeContext(broken, brokenRegistry)
     contexts.push(brokenCtx)
     client.apply(brokenCtx)
-    brokenCtx.provided.get(BRIDGE_SERVICE).attach(provider)
     brokenCtx.activate()
+    // The editor hands a workbook over, so the loop has something to offer and
+    // will actually attempt a poll.
+    brokenRegistry.entry.attach(provider)
 
     await until(() => attempts >= 1, 'the first failed attempt')
     const seen = attempts
@@ -285,12 +324,11 @@ async function run() {
     assert(attempts - seen <= 1, `the loop retried ${attempts - seen} times in 600ms — it is not backing off`)
   })()
 
-  await step('detaching stops the tab offering itself', async () => {
-    release()
-    assert(bridge.list().length === 0, 'the released provider is still attached')
+  await step('releasing the workbook stops the tab offering itself', async () => {
     const seen = connection.polls
+    release()
     await sleep(1_400)
-    assert(connection.polls === seen, `the loop kept polling after detach (${connection.polls - seen} more)`)
+    assert(connection.polls === seen, `the loop kept polling after release (${connection.polls - seen} more)`)
   })()
 
   await step('disposing the plugin stops the loop and leaves nothing running', () => {

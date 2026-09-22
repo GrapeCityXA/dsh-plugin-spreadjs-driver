@@ -1,18 +1,25 @@
 /**
  * dsh-spreadjs-driver — browser half.
  *
- * Publishes `spreadjsHostBridge`, the one door through which a host plugin that
- * owns a live SpreadJS workbook can hand it over:
+ * Registers an entry into the roster the *editor* publishes, and takes custody of
+ * a workbook only when that editor hands one over:
  *
- *   editor (owner)  ──attach(provider)──▶  this bridge  ──▶  live workbook
+ *   editor (owner)  ──attach(provider)──▶  this entry  ──▶  live workbook
+ *
+ * It used to publish `spreadjsHostBridge` itself and be injected by name. That
+ * allowed exactly one bridge — a second `provide` of a live name throws, and the
+ * losing plugin never activates — so no user choice was possible. See `types.ts`
+ * for the full reasoning and `docs/design-live-designer-bridge.md` for the
+ * history.
  *
  * Design constraints this file exists to hold:
  *
  *  1. **The workbook is offered, never discovered.** The owner decides who may
  *     touch its document; there is no lookup that returns somebody else's.
- *  2. **`attach` and `list` are the entire public surface.** The way to *act* on
- *     an attached workbook is not published, so a third client plugin that gets
- *     this service still cannot edit a document it does not own.
+ *  2. **`attach` and the title are the entire public surface.** The way to *act*
+ *     on an attached workbook is not published — not on the entry, and not as an
+ *     export of this bundle — so a third client plugin cannot edit a document it
+ *     does not own.
  *  3. **No UI.** This half renders nothing; it holds references, offers them to
  *     the host, and runs what comes back.
  *
@@ -20,9 +27,15 @@
  * `{@link LIVE_CHANNEL}`, and the host answers with work addressed to a workbook
  * it knows this tab holds. See `docs/design-live-designer-bridge.md` §5.
  */
-import { runAgainstProvider, type LiveResult } from './executor.ts'
+
 import { startLiveChannel } from './live.ts'
-import { BRIDGE_SERVICE, type ClientContextLike, type SpreadjsHostBridge, type SpreadjsWorkbookProvider } from './types.ts'
+import {
+  BRIDGE_ID,
+  BRIDGE_REGISTRY_SERVICE,
+  type ClientContextLike,
+  type SpreadjsBridgeRegistry,
+  type SpreadjsWorkbookProvider,
+} from './types.ts'
 
 export const name = 'dsh-spreadjs-driver'
 
@@ -37,27 +50,10 @@ function attachedProviders(): readonly SpreadjsWorkbookProvider[] {
   return [...attached.values()]
 }
 
-/**
- * Run `code` against one attached workbook. Intentionally NOT published on the
- * bridge service: only this half (and any transport it grows) may call it.
- */
-export function executeAttached(id: string, code: string): Promise<LiveResult> {
-  const provider = attached.get(id)
-  if (provider === undefined) {
-    // Throwing here is a programming error in the transport; callers that can
-    // legitimately race an unmount get the structured form below.
-    throw new Error(`no provider attached under ${JSON.stringify(id)}`)
-  }
-  return runAgainstProvider(provider, code)
-}
-
-/** Ids currently attached. */
-export function attachedIds(): readonly string[] {
-  return [...attached.keys()]
-}
-
 export function apply(ctx: ClientContextLike): void {
-  const bridge: SpreadjsHostBridge = {
+  const bridge = {
+    id: BRIDGE_ID,
+    title: (): string => 'SpreadJS Driver',
     attach(provider: SpreadjsWorkbookProvider): () => void {
       attached.set(provider.id, provider)
       let released = false
@@ -69,12 +65,18 @@ export function apply(ctx: ClientContextLike): void {
         if (attached.get(provider.id) === provider) attached.delete(provider.id)
       }
     },
-    list(): readonly string[] {
-      return attachedIds()
-    },
   }
 
-  ctx.provide(BRIDGE_SERVICE, bridge)
+  // Registered into the editor's roster rather than published as a service of
+  // our own — see the note in types.ts. The callback simply never runs when no
+  // editor is installed, which is the same state as before: nothing to drive.
+  ctx.inject([BRIDGE_REGISTRY_SERVICE], (hosted) => {
+    hosted.effect(() => {
+      const registry = hosted.get(BRIDGE_REGISTRY_SERVICE) as SpreadjsBridgeRegistry | undefined
+      if (registry === undefined || typeof registry.register !== 'function') return
+      return registry.register(bridge)
+    }, 'dsh-spreadjs-driver: bridge registration')
+  })
 
   // The transport that carries instructions from the harness host into this page.
   // Optional on both ends: without a connection service nothing polls, and
