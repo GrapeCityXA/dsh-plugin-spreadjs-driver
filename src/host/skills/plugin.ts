@@ -7,6 +7,7 @@ import {
   type SkillDefinition,
   type SkillProvider,
 } from '@deepseek-ai/dsh-skill'
+import { keepPresent } from '../activation.ts'
 
 const PROVIDER_NAME = 'spreadjs'
 const INVOCATION = { modelInvocable: true, userInvocable: true } as const
@@ -61,7 +62,13 @@ export const inject = ['skills']
 
 /** Register bundled spreadjs instructions on the DSH skill seam. */
 export function apply(ctx: Context): void {
-  ctx.skills.registerProvider(() => provider)
+  // The skill is part of what this plugin puts in front of the model, so it
+  // follows the bridge choice like the tools do — see the scope note in
+  // `activation.ts`. SKILL.md is the document that teaches the model to call
+  // `sjs_*` by name; leaving it registered once those tools are gone would hand
+  // the model a manual for a capability it does not have, and a skill reads as
+  // authoritative in a way a redundant tool does not.
+  keepPresent(ctx, 'skill', () => ctx.skills.registerProvider(() => provider))
 }
 
 function stripFrontmatter(value: string): string {

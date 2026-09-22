@@ -11,6 +11,13 @@ export type { SpreadjsConfig }
 export { SjsProvider } from './provider/sjs-provider.ts'
 export { SjsService } from './service/sjs-service.ts'
 export { LiveChannel } from './live/channel.ts'
+// Each row as a mountable module, so a test can apply exactly one — the whole
+// entry cannot be mounted without a real cordis context, because the provider
+// constructs a Service. Tests use these to check the two rows agree about
+// presence, which is the property the helper exists to guarantee.
+export * as livePlugin from './live/plugin.ts'
+export * as toolsPlugin from './tools/plugin.ts'
+export * as skillsPlugin from './skills/plugin.ts'
 
 export const name = 'dsh-spreadjs-driver'
 

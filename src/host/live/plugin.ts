@@ -25,6 +25,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from '../config.ts'
 import { withSjsErrorContent } from '../tools/presentation.ts'
+import { keepPresent } from '../activation.ts'
 import { LiveChannel } from './channel.ts'
 import { liveExecuteTool } from './tool.ts'
 import { liveStatusTool } from './status-tool.ts'
@@ -74,6 +75,20 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
     }, 'spreadjs-live: workbook channel')
   })
 
-  ctx.tools.register(withSjsErrorContent(liveExecuteTool(ctx, channel, config)))
-  ctx.tools.register(withSjsErrorContent(liveStatusTool(ctx, channel)))
+  // The live tools exist only while this plugin is the chosen bridge — the same
+  // rule as the file tools, through the same helper, so the two rows cannot
+  // disagree about whether this plugin is active. `activation.ts` carries the
+  // reasoning, including why every way of not knowing resolves to "present".
+  keepPresent(ctx, 'live tools', () => {
+    const dropExecute = ctx.tools.register(
+      withSjsErrorContent(liveExecuteTool(ctx, channel, config)),
+    )
+    const dropStatus = ctx.tools.register(
+      withSjsErrorContent(liveStatusTool(ctx, channel)),
+    )
+    return () => {
+      dropExecute()
+      dropStatus()
+    }
+  })
 }

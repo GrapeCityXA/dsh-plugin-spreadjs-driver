@@ -9,6 +9,7 @@ import { screenshotTool } from './definitions/screenshot.ts'
 import { statusTool } from './definitions/status.ts'
 import { worktreeTool } from './definitions/worktree.ts'
 import { withSjsErrorContent } from './presentation.ts'
+import { keepPresent } from '../activation.ts'
 
 export const inject = ['sjs', 'tools']
 export const name = 'spreadjs-tools'
@@ -16,11 +17,24 @@ export const name = 'spreadjs-tools'
 /** Register model-facing domain tools over `ctx.sjs`. */
 export function apply(ctx: Context, config: ResolvedConfig): void {
   const operationTimeoutMs = config.operationTimeoutMs
-  ctx.tools.register(withSjsErrorContent(newTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(statusTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(executeTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(importTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(exportTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(screenshotTool(ctx, operationTimeoutMs)))
-  ctx.tools.register(withSjsErrorContent(worktreeTool(ctx, operationTimeoutMs)))
+
+  // Present only while this plugin is the chosen bridge — the setting names the
+  // plugin that owns spreadsheets here, not merely whoever receives the live
+  // document. `activation.ts` carries the reasoning, including why every way of
+  // not knowing resolves to "present".
+  keepPresent(ctx, 'file tools', () => {
+    const tools = [
+      newTool(ctx, operationTimeoutMs),
+      statusTool(ctx, operationTimeoutMs),
+      executeTool(ctx, operationTimeoutMs),
+      importTool(ctx, operationTimeoutMs),
+      exportTool(ctx, operationTimeoutMs),
+      screenshotTool(ctx, operationTimeoutMs),
+      worktreeTool(ctx, operationTimeoutMs),
+    ]
+    const drops = tools.map((tool) => ctx.tools.register(withSjsErrorContent(tool)))
+    return () => {
+      for (const drop of drops) drop()
+    }
+  })
 }
