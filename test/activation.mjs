@@ -47,15 +47,23 @@ const same = (actual, expected) => JSON.stringify(actual) === JSON.stringify(exp
  * A context with just enough cordis in it: a tool registry that records names, an
  * event bus the test can fire, and a settings service it can rewrite.
  */
-function fakeHost({ bridge, withSettings = true } = {}) {
+function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
   const tools = new Map()
   const listeners = new Map()
   const pending = []
   const skillProviders = new Set()
   let chosen = bridge
 
+  // DSH 0.1.7's host settings service has no per-namespace read; `describe()`
+  // returns one descriptor per Loader entry, and the editor's entry is always
+  // there — with its Config default when nothing is chosen. Modelled that way
+  // rather than as an absent section, because "no choice" and "no editor" are
+  // different states and only the second one is a missing descriptor.
   const settings = {
-    get: (ns) => (ns === NAMESPACE ? (chosen === undefined ? {} : { bridge: chosen }) : undefined),
+    describe: () =>
+      foreignOnly
+        ? [{ ns: 'some-other-plugin', value: { bridge: chosen ?? '' } }]
+        : [{ ns: NAMESPACE, value: { bridge: chosen ?? '' } }],
   }
   const services = {
     tools: {
@@ -217,6 +225,15 @@ console.log('activation:')
 }
 
 // --- fail-open ----------------------------------------------------------------
+{
+  // The editor is not installed: the settings service exists, but nothing has
+  // registered a namespace for it. Without the descriptor there is no choice to
+  // read, and the answer must be "present" — a driver that vanished because the
+  // plugin that owns the roster was absent would be exactly backwards.
+  const host = fakeHost({ bridge: OTHER, foreignOnly: true })
+  mountBoth(host)
+  check('no descriptor for the editor namespace → present', same(registered(host.tools), ALL))
+}
 {
   const host = fakeHost({ withSettings: false })
   mountBoth(host)

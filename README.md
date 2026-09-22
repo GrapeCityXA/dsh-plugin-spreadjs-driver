@@ -8,22 +8,29 @@ English · [简体中文](README.zh-CN.md)
 
 ## Requirements
 
-- **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.5-rc.2`).
+- **Node.js ≥ 22.19** and a **DeepSeek Harness** runtime (`@deepseek-ai/dsh` `0.1.7-alpha.1` or later).
 - **Google Chrome or Microsoft Edge installed.** The engine runs in a real browser process (no browser binary ships with the plugin, and no browser UI is ever shown). Chrome is preferred when both exist — Edge publishes its tabs into Windows shell surfaces, which litters Alt+Tab; set the `browserPath` plugin option to point at a specific executable either way. Nothing found → `SJS_BROWSER_UNAVAILABLE`, naming the paths that were probed.
 - A writable temp directory for the browser's throwaway profile.
 - **For `.pdf` export containing CJK text, the host must supply a CJK-capable font.** The plugin ships no fonts: it looks for `.ttf` / `.otf` files in the operating system's font directories (plus anything listed in `GC_SJS_PDF_FONT_DIRS`) and needs one. Windows and macOS always have one. **A default Linux install usually does not** — its CJK fonts are typically `.ttc`, which SpreadJS cannot embed — so plan on installing a `.ttf` or pointing `GC_SJS_PDF_FONT_DIRS` at one. With no usable font, `.pdf` export fails with `SJS_PDF_FONT_UNAVAILABLE` rather than handing back a PDF whose text is missing. PNG screenshots need none of this: the browser has real fonts and falls back per glyph.
 
 **On the DSH version range.** `dsh.engines.dsh` and the `@deepseek-ai/*` peer
-ranges name `0.1.5-rc.2` exactly — not a caret, and not a widened list. DSH is
-pre-1.0 and ships breaking changes between release candidates, so the only
-version this plugin can honestly claim is the one its CI actually ran against.
-A caret on a prerelease would silently promise compatibility with the next rc;
-a `>=` would promise it forever. When a new DSH is released and passes CI here,
-this range is raised to name it — deliberately, one version at a time.
+ranges name `>=0.1.7-alpha.1`: this plugin uses settings APIs that only exist
+from 0.1.7 (see *Being driven by a designer*), so an older host cannot run it.
+
+Two things about that form are worth stating plainly, because the obvious reading
+of a peer range is wrong here. DSH does **not** enforce one: `peerDependencies`
+is read in exactly two places and both take only the *names*, and
+`dsh-package-manifest` says outright that `engines.dsh` is "declarative until a
+reader enforces it". So this range is documentation, not a gate — installing on
+0.1.6 succeeds and the plugin then misbehaves quietly, which is why the floor is
+written down rather than relied on. And the peers name only what the plugin
+actually resolves at run time (`schemastery`, plus `react` in the browser half);
+the `@deepseek-ai/dsh-*` packages are listed because the host composition must
+supply them, not because the bundle imports them.
 
 ## Install
 
-Requires DSH `0.1.5-rc.2` and Google Chrome or Microsoft Edge (the engine runs in the system browser; no browser binary ships with the plugin).
+Requires DSH `0.1.7-alpha.1` or later, and Google Chrome or Microsoft Edge (the engine runs in the system browser; no browser binary ships with the plugin).
 
 There is no build step. With the DSH CLI installed:
 
@@ -218,11 +225,19 @@ is an agreement each driver keeps on its own — see *Writing your own driver* b
   so your plugin behaves exactly as before without it — and the disposer `register`
   returns releases the entry on unload, so a destroyed document is never kept alive.
 
-`@grapecity-software/dsh-spreadjs-editor` **0.1.5 or later** is the reference consumer: its
-`src/client/bridge.ts` is this contract in full, and `docs/design-live-designer-bridge.md`
-records why the dependency runs this way round. The version floor matters — an earlier
-editor predates the bridge and would leave the integration silently absent rather than
-erroring, so `sjs_live_execute` would simply never find a designer.
+`@grapecity-software/dsh-spreadjs-editor` **0.1.5 or later** is the reference consumer:
+its `src/client/bridge-registry.ts` is this contract in full, and
+`docs/design-live-designer-bridge.md` records why the dependency runs this way round.
+The version floor matters — an earlier editor predates the roster and would leave the
+integration silently absent rather than erroring, so `sjs_live_execute` would simply
+never find a designer.
+
+Both plugins also need **DSH 0.1.7-alpha.1 or later**, and that floor is a real one
+rather than a formality: the chosen bridge is stored as a field in the editor's own
+settings namespace, and 0.1.7 is where namespaces stopped being something a plugin
+registers by name and became something derived from its Loader entry. On 0.1.5 the
+editor's settings page never appeared and this plugin's read of the choice failed
+closed-to-open — see the note on `readChosenBridge` in `src/host/activation.ts`.
 
 > `subscribe` is declared on the provider interface but is not consulted by the bridge
 > yet; implementing it currently has no effect.
@@ -260,8 +275,8 @@ Two rules about names:
 
 ### 2. Yield when the user picks someone else
 
-The editor writes the chosen id into its own settings namespace. Read it, and let it
-decide whether your tools exist:
+The editor stores the chosen id as a field in its own settings namespace. Read it, and
+let it decide whether your tools exist:
 
 ```ts
 // your-plugin/src/host/presence.ts
@@ -282,12 +297,11 @@ function sync(ctx: Context, register: () => () => void): void {
 export function apply(ctx: Context): void {
   ctx.effect(() => {
     const onDocument = ctx.on('settings/document-updated', (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
-    const onUpdated  = ctx.on('settings/updated',          (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
     sync(ctx, register)
-    return () => { onDocument(); onUpdated(); release?.(); release = undefined }
+    return () => { onDocument(); release?.(); release = undefined }
   }, 'acme-bridge: tool presence follows the chosen bridge')
 
-  // The settings service may come up after you; namespace registration emits no event.
+  // The settings service may come up after you; an entry becoming served emits no event.
   ctx.inject(['settings'], () => sync(ctx, register))
 }
 ```
@@ -297,9 +311,15 @@ and `test/activation.mjs` is the behaviour it has to have.
 
 The rules that matter:
 
-- **Read the choice, don't guess it.** `spreadjs-editor.bridge` is the one field. Reach
-  it through `ctx.get('settings')` rather than injection if you want it readable from
-  any callback.
+- **Read the choice, don't guess it — and know which read works.** The field is
+  `bridge`, in the settings namespace the editor's Loader entry id names
+  (`spreadjs-editor`). On DSH 0.1.7 the only host-side way to read another entry's value
+  is `ctx.settings.describe()`, which returns one descriptor per entry; find the one
+  whose `ns` matches and read `value.bridge`. The per-namespace `settings.get(ns)` that
+  earlier versions had is gone, and reaching for it fails in the worst possible way here:
+  the throw is swallowed by the fail-open rule below, so presence answers "yes" forever
+  and the yield protocol goes quiet with nothing in any log. Prefer
+  `ctx.get('settings')` over injection so the read stays available from any callback.
 - **Derive, never remember.** The tempting shape is "unregister while A is chosen, then
   re-register when A goes away" — which needs something to remember to put you back, and
   whatever remembers can be lost to a reload, a crash, or an unload. Make presence a pure
@@ -314,14 +334,19 @@ The rules that matter:
   teaches the model to call `sjs_*` by name, so leaving it registered after the tools are
   gone hands the model a manual for a capability it does not have. A stale skill is worse
   than a redundant tool — it reads as authoritative.
-- **Fail open.** No settings service, an unregistered namespace, a value that is not a
-  string — all of them mean *present*. The two failures are not symmetrical: being absent
-  when the user needed you costs them their tools, while being present with nothing to do
-  costs one line in a catalog.
-- **Listen to both events, filtered by namespace.** `settings/document-updated` is the one
-  that fires when a choice is **cleared** back to its default — a change `settings/updated`
-  swallows, because the resolved value is unchanged. And the `inject(['settings'])` pass
-  closes the window where the service arrives after you and the choice was already made.
+- **Fail open — but do not let that hide a broken read.** No settings service, no
+  descriptor for the editor's namespace, a value that is not a string — all of them mean
+  *present*. The two failures are not symmetrical: being absent when the user needed you
+  costs them their tools, while being present with nothing to do costs one line in a
+  catalog. The cost is that a read which is simply *wrong* — a renamed method, a moved
+  field — looks exactly like "no choice was made". If you migrate this to a new DSH,
+  check the read against a real session rather than trusting that it compiled.
+- **Listen to `settings/document-updated`, filtered by namespace.** It fires both when a
+  value changes and when one is **cleared** back to its default, which is the case that
+  matters here. 0.1.5 also emitted a `settings/updated`; 0.1.7 does not, so a subscription
+  to it is a listener that never runs — harmless, but it reads like coverage it is not.
+  The `inject(['settings'])` pass closes the remaining window, where the service comes up
+  after you and the choice was already made.
 - **Leave the roster entry alone.** Yield your *tools*, not your bridge entry. That entry
   is what the user needs on the settings page to switch back, so unregistering it makes
   the choice one-way.

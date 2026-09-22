@@ -8,16 +8,24 @@
 
 ## 环境要求
 
-- **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.5-rc.2`）。
+- **Node.js ≥ 22.19**，以及 **DeepSeek Harness** 运行时（`@deepseek-ai/dsh` `0.1.7-alpha.1` 或更高）。
 - **宿主机需装有 Google Chrome 或 Microsoft Edge**。引擎运行在真实浏览器进程中（插件不自带浏览器内核，也不会弹出任何界面）。两者都在时优先用 Chrome——Edge 会把自己的标签页发布进 Windows 外壳，在 Alt+Tab 里堆积条目；两种情况都可以用插件配置 `browserPath` 指定具体可执行文件。都找不到时报 `SJS_BROWSER_UNAVAILABLE`，并在消息里列出探测过的路径。
 - 需要一个可写的临时目录，用于浏览器的一次性 profile。
 - **`.pdf` 导出要保留中文，字体必须由宿主机提供。** 插件**不自带任何字体**：它在操作系统的字体目录（以及环境变量 `GC_SJS_PDF_FONT_DIRS` 追加的目录）里找 `.ttf` / `.otf`，有一个就够。Windows 和 macOS 一定有；**默认安装的 Linux 通常没有**——它的中文字体多是 `.ttc`，而 SpreadJS 无法嵌入 `.ttc`，所以要事先装一个 `.ttf`，或用 `GC_SJS_PDF_FONT_DIRS` 指过去。找不到可用字体时，`.pdf` 导出会以 `SJS_PDF_FONT_UNAVAILABLE` 明确失败，而不是交回一份文字缺失的 PDF。`png` 截图不需要这些——浏览器自带真实字体，且按字形逐个回退。
 
-**关于 DSH 版本区间。** `dsh.engines.dsh` 与各 `@deepseek-ai/*` peer 区间写的是精确版本 `0.1.5-rc.2`——既不是 caret，也不是拉长的列表。DSH 尚未 1.0，rc 之间就会有不兼容改动，所以这个插件能诚实声明的只有 CI 真跑过的那一个版本。对预发布版加 caret 等于默默承诺下一个 rc 也兼容；写 `>=` 则等于承诺永远兼容。将来 DSH 发新版、且在本地 CI 跑通之后，这个区间才会被显式抬到那个版本——一次一个，逐版本推进。
+**关于 DSH 版本区间。** `dsh.engines.dsh` 与各 `@deepseek-ai/*` peer 区间写的是 `>=0.1.7-alpha.1`：
+本插件用到的 settings API 从 0.1.7 起才存在（见《被设计器驱动》），更早的宿主跑不了。
+
+关于这个写法有两点要直说，因为 peer 区间最容易被人误读。**DSH 并不校验它**：`peerDependencies`
+在全树只有两处读取，且都只取**名字**，而 `dsh-package-manifest` 明写 `engines.dsh` 是
+「declarative until a reader enforces it」。所以这个区间是**文档，不是闸门**——在 0.1.6 上照样
+装得上，然后插件安静地不工作；这也正是为什么下限要写下来，而不是指望它拦。另外，peer 里只列**运行时
+真正会解析**的包（`schemastery`，浏览器半还有 `react`）；那几个 `@deepseek-ai/dsh-*` 列出来，是因为
+宿主组合必须提供它们，不是因为 bundle 里 import 了它们。
 
 ## 安装
 
-需要 DSH `0.1.5-rc.2`，并装有 Google Chrome 或 Microsoft Edge（引擎跑在系统浏览器里，插件不自带浏览器内核）。
+需要 DSH `0.1.7-alpha.1` 或更高，并装有 Google Chrome 或 Microsoft Edge（引擎跑在系统浏览器里，插件不自带浏览器内核）。
 
 插件无需编译。使用已安装的 DSH CLI 安装并启动：
 
@@ -248,12 +256,11 @@ function sync(ctx: Context, register: () => () => void): void {
 export function apply(ctx: Context): void {
   ctx.effect(() => {
     const onDocument = ctx.on('settings/document-updated', (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
-    const onUpdated  = ctx.on('settings/updated',          (ns) => { if (ns === EDITOR_NAMESPACE) sync(ctx, register) })
     sync(ctx, register)
-    return () => { onDocument(); onUpdated(); release?.(); release = undefined }
+    return () => { onDocument(); release?.(); release = undefined }
   }, 'acme-bridge: tool presence follows the chosen bridge')
 
-  // settings 服务可能在你之后才起来；命名空间注册不会发事件。
+  // settings 服务可能在你之后才起来；条目被服务这件事本身不发事件。
   ctx.inject(['settings'], () => sync(ctx, register))
 }
 ```
@@ -263,8 +270,12 @@ export function apply(ctx: Context): void {
 
 真正要紧的几条：
 
-- **读选择，别猜。** 就 `spreadjs-editor.bridge` 这一个字段。想在任何回调里都读得到，就走
-  `ctx.get('settings')` 而不是注入。
+- **读选择，别猜——而且要清楚哪种读法才有效。** 字段是 `bridge`，位于编辑器 Loader 条目
+  id 所指的那个 settings 命名空间（`spreadjs-editor`）。在 DSH 0.1.7 上，宿主侧读另一个条目
+  的值**只有** `ctx.settings.describe()` 一条路：它每个条目返回一个描述符，找到 `ns` 匹配的
+  那个，读 `value.bridge`。早期版本那种按命名空间读的 `settings.get(ns)` 已经没了，而在这里
+  抓错方法会以最糟的方式失败——抛错被下面的"失败往在场倒"吞掉，于是"在场"永远回答"是"，
+  让位协议一声不吭地失效。想在任何回调里都读得到，就走 `ctx.get('settings')` 而不是注入。
 - **派生，不要记忆。** 最容易写错的样子是"选中 A 时注销、A 走了再注册回来"——这需要一个东西
   记着把你放回来，而那个东西可能丢（刷新、崩溃、卸载）。把在场做成当前值的纯函数、每个事件
   都重新派生一次，就没有状态可失同步。
@@ -274,11 +285,15 @@ export function apply(ctx: Context): void {
 - **你摆在模型面前的别的东西，也要一起 gate。** 本插件连同自带的 `spreadjs` skill 一起撤下，
   这不是细节：SKILL.md 就是教模型按名字调用 `sjs_*` 的那份文档，工具都撤了还留着它，等于递给
   模型一本它没有的能力的说明书。过期的 skill 比多余的工具更糟——它读起来是权威的。
-- **失败往"在场"倒。** 没有 settings 服务、命名空间没注册、值不是字符串——一律算**在场**。
-  两种失败不对称：需要你时你不在，代价是用户失去工具；没事可做时你在，代价是清单里多一行。
-- **两个事件都听，按命名空间过滤。** `settings/document-updated` 才是选择被**清回默认值**时
-  触发的那个——`settings/updated` 会因为解析后的值没变而吞掉这次变化。而 `inject(['settings'])`
-  那一遍，补的是"服务在你之后才起来、而选择早已做出"的那扇窗。
+- **失败往"在场"倒——但别让这一点掩盖了读坏掉。** 没有 settings 服务、编辑器命名空间没有
+  描述符、值不是字符串——一律算**在场**。两种失败不对称：需要你时你不在，代价是用户失去工具；
+  没事可做时你在，代价是清单里多一行。这个选择的代价是：一个**读错了**的实现（方法改名、
+  字段搬家）看起来和"用户没做过选择"一模一样。所以把这段迁到新版 DSH 时，要拿真实会话验一遍，
+  别因为编译过了就信。
+- **听 `settings/document-updated`，按命名空间过滤。** 值变化时它触发，选择被**清回默认值**时
+  也触发——后者才是这里要紧的情况。0.1.5 还会发一个 `settings/updated`，0.1.7 不再发，所以
+  订阅它等于挂了一个永不执行的监听器：无害，但读起来像是有一层并不存在的覆盖。
+  `inject(['settings'])` 那一遍，补的是"服务在你之后才起来、而选择早已做出"的那扇窗。
 - **别动名册条目。** 让位让的是**工具**，不是你的桥条目。用户要靠在设置页上看到那个条目才能
   切回来，注销它等于把选择变成单向的。
 - **不打招呼，也不指望回应。** 你读一个事实、自己判断、作用在自己身上。你永远不需要知道另一个

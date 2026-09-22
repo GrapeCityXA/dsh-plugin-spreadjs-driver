@@ -137,20 +137,49 @@ export function createActivation(options: ActivationOptions): Activation {
 }
 
 /**
+ * The slice of the host settings service this plugin reads.
+ *
+ * Declared structurally rather than imported: `@deepseek-ai/dsh-settings` is not
+ * a dependency, and the only thing needed from it is one method's shape.
+ *
+ * `describe` is not a convenience here, it is the only way in. DSH 0.1.7 models
+ * settings as one namespace per Loader entry — the entry's id, resolved from
+ * that entry's Config — so the per-namespace read this used to do
+ * (`settings.get(ns)`) no longer exists. `describe()` returns one descriptor per
+ * entry, and that is what makes a cross-plugin read possible at all.
+ */
+interface SettingsLike {
+  describe(options?: { redactSecrets?: boolean }): Array<{ ns: string; value: unknown }>
+}
+
+/**
  * The bridge id the user has chosen, or undefined when there is nothing to read.
  *
  * Every failure returns undefined, which the activation reads as "no choice" and
  * therefore as "present". Reached through `ctx.get` rather than injection so this
  * stays readable from any callback, and wrapped because a service that is present
  * but shaped unexpectedly must not take the tools down with it.
+ *
+ * That catch-all has one cost, and it has already been paid once: when 0.1.7
+ * removed `settings.get`, this function kept returning undefined rather than
+ * failing, so the plugin answered "present" forever and the yield protocol went
+ * silent with nothing in any log. Only the method changed; the fail-open
+ * contract is unchanged and still deliberate.
+ *
+ * `redactSecrets` is deliberately not requested — this is a host-local read, and
+ * redaction can only remove fields. The bridge id is not a secret.
  */
 export function readChosenBridge(ctx: Context): string | undefined {
   try {
     const settings = (ctx as unknown as { get(name: string): unknown }).get('settings') as
-      | { get?(namespace: string): unknown }
+      | SettingsLike
       | undefined
-    if (settings === undefined || typeof settings.get !== 'function') return undefined
-    const section = settings.get(EDITOR_SETTINGS_NAMESPACE)
+    if (settings === undefined || typeof settings.describe !== 'function') return undefined
+    const entry = settings
+      .describe()
+      .find((descriptor) => descriptor.ns === EDITOR_SETTINGS_NAMESPACE)
+    if (entry === undefined) return undefined
+    const section = entry.value
     if (typeof section !== 'object' || section === null) return undefined
     const value = (section as Record<string, unknown>)[BRIDGE_FIELD]
     return typeof value === 'string' ? value : undefined
@@ -177,14 +206,12 @@ export function keepPresent(ctx: Context, row: string, activate: () => () => voi
   })
 
   ctx.effect(() => {
-    // Both events, and the redundancy is intended: `sync` is idempotent, and
-    // `document-updated` is the one that fires when a choice is CLEARED back to
-    // its default — a change `updated` swallows because the resolved value is
-    // equal. Filtered by namespace so another plugin's settings do not wake us.
+    // One event, filtered by namespace so another plugin's settings do not wake
+    // us. This used to subscribe to `settings/updated` as well; that event no
+    // longer exists in 0.1.7 — and `document-updated` is the one that carries a
+    // cleared-back-to-default change anyway, which is the case the second
+    // subscription was guarding.
     const onDocument = ctx.on('settings/document-updated', (ns: string) => {
-      if (ns === EDITOR_SETTINGS_NAMESPACE) activation.sync()
-    })
-    const onUpdated = ctx.on('settings/updated', (ns: string) => {
       if (ns === EDITOR_SETTINGS_NAMESPACE) activation.sync()
     })
     // The first evaluation lives here rather than in an injection, so the tools
@@ -192,7 +219,6 @@ export function keepPresent(ctx: Context, row: string, activate: () => () => voi
     activation.sync()
     return () => {
       onDocument()
-      onUpdated()
       activation.release()
     }
   }, `dsh-spreadjs-driver: ${row} presence follows the chosen bridge`)
@@ -206,19 +232,16 @@ export function keepPresent(ctx: Context, row: string, activate: () => () => voi
 }
 
 /**
- * The two settings events this plugin listens to, declared here rather than
- * imported from `@deepseek-ai/dsh-settings` — that package is not a dependency,
- * and the only thing needed from it is the augmentation its types carry. The
- * shapes are the ones its own declaration uses.
+ * The settings event this plugin listens to, declared here rather than imported
+ * from `@deepseek-ai/dsh-settings` — that package is not a dependency, and the
+ * only thing needed from it is the augmentation its types carry. The shape is
+ * the one its own declaration uses.
+ *
+ * It is the only settings event there is in 0.1.7: a companion `settings/updated`
+ * that 0.1.5 also emitted is gone.
  */
 declare module '@deepseek-ai/cordis' {
   interface Events {
-    'settings/updated'(
-      namespace: string,
-      next: unknown,
-      previous: unknown,
-      source: unknown,
-    ): void
     'settings/document-updated'(namespace: string, revision: number): void
   }
 }
