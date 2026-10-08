@@ -121,7 +121,7 @@ See `skills/spreadjs/SKILL.md` for the full tool map, the environment contract, 
 The `sjs_*` tools are only half of what this plugin is. The other half is what makes
 it a *bridge*: the editor plugin publishes a roster of bridges, a plugin that can
 drive a live workbook registers into it, and **the user picks which one to use in
-Settings → SpreadJS**. This plugin is one entry on that roster.
+Settings → Spreadsheet Editor**. This plugin is one entry on that roster.
 
 What makes the arrangement work is that a DSH client plugin's browser half is not a
 sandbox. Every plugin's client half is loaded into the same page, the same JS realm,
@@ -208,7 +208,7 @@ and undo before anything is written.
 
 **These tools are conditional.** Every tool this plugin registers — the seven file tools,
 the two live ones, and its bundled skill — exists only while this plugin is the chosen
-bridge. Choose someone else in Settings → SpreadJS and they all step aside, because the
+bridge. Choose someone else in Settings → Spreadsheet Editor and they all step aside, because the
 setting names the plugin that *owns spreadsheets* here, not merely the one holding the
 live document. The bridge layer is a hard constraint the editor enforces; the tool layer
 is an agreement each driver keeps on its own — see *Writing your own driver* below.
@@ -365,7 +365,7 @@ your own — but the user only gets the correct outcome when both drivers do it.
 
 `dsh-plugin-fake-driver` in this workspace exists to make that observable: it is a second
 driver that yields like this one, and `build_fake.bat` installs it alongside. Install
-both, pick one in Settings → SpreadJS, and watch which tools are left in the catalog.
+both, pick one in Settings → Spreadsheet Editor, and watch which tools are left in the catalog.
 
 ## Notes
 

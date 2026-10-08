@@ -111,7 +111,7 @@ return { total: s.getValue(5, 1) }
 ## 被设计器驱动：`spreadjsBridgeRegistry`
 
 `sjs_*` 那些工具只是这个插件的一半。另一半是它作为**桥**的身份：编辑器插件发布一份"桥"的
-名册，有能力驱动活工作簿的插件注册进去，**用户在 设置 → SpreadJS 里选用哪一个**。本插件
+名册，有能力驱动活工作簿的插件注册进去，**用户在 设置 → Spreadsheet Editor 里选用哪一个**。本插件
 就是名册上的一项。
 
 之所以成立，是因为 DSH 客户端插件的浏览器半**不是沙箱**：所有插件的客户端半被加载进同一个
@@ -187,7 +187,7 @@ export function apply(ctx: ClientContext): void {
 再谈落盘。
 
 **这些工具是有条件的。** 本插件注册的所有东西——七个文件工具、两个 live 工具、以及自带的
-skill——都只在**本插件是被选中的桥**时存在。在 设置 → SpreadJS 里选了别人，它们会一起让位，
+skill——都只在**本插件是被选中的桥**时存在。在 设置 → Spreadsheet Editor 里选了别人，它们会一起让位，
 因为这个 setting 命名的是**在此拥有电子表格**的插件，而不只是拿着活文档的那个。桥那一层是
 编辑器执行的硬约束，工具那一层是每个 driver 各自遵守的约定——见下面的《自己实现一个 driver》。
 
@@ -307,7 +307,7 @@ export function apply(ctx: Context): void {
 靠自己就消掉一半问题——但用户要拿到正确的结果，得两个 driver 都这么做。
 
 本 workspace 里的 `dsh-plugin-fake-driver` 就是为了让这件事**看得见**：它是第二个 driver，
-让位方式和本插件一样，`build_fake.bat` 把它和另外两个一起装上。装好、在 设置 → SpreadJS
+让位方式和本插件一样，`build_fake.bat` 把它和另外两个一起装上。装好、在 设置 → Spreadsheet Editor
 里选一个，看清单里剩下哪些工具。
 
 ## 说明
