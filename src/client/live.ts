@@ -129,7 +129,19 @@ async function runJob(
   if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
 
   const file = provider.getActivePath?.()
-  if (job.save === true && provider.save !== undefined) {
+  if (job.save === true) {
+    // A bridge with no `save` is a failure, not a skip. Asking for a save and
+    // being handed a success that wrote nothing is the worst of the three
+    // outcomes: the caller cannot tell it from a real write.
+    if (provider.save === undefined) {
+      return {
+        jobId: job.jobId,
+        ok: false,
+        code: 'SJS_LIVE_SAVE_FAILED',
+        message: `the edit is in the browser, but the bridge holding ${file ?? 'the workbook'} `
+          + 'cannot write it back (it provides no save), so the file was not written',
+      }
+    }
     try {
       await provider.save()
     } catch (error) {

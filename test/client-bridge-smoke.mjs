@@ -324,6 +324,28 @@ async function run() {
     assert(attempts - seen <= 1, `the loop retried ${attempts - seen} times in 600ms — it is not backing off`)
   })()
 
+  await step('a bridge that cannot save fails, instead of reporting a write it never made', async () => {
+    // `save` is optional on the provider contract, and a third-party bridge is
+    // free to omit it. Asking one for a save must then fail LOUDLY: a success
+    // that wrote nothing cannot be told from a real write, which is how a field
+    // report came back ok:true, "saving":true, and a file whose timestamp had
+    // not moved — after which the model redid the whole task the other way.
+    release()
+    const cannotSave = { id: 'spreadjs-designer', getWorkbook: () => workbook, getActivePath: () => 'C:/work/book.ssjson' }
+    const release2 = entry.attach(cannotSave)
+    await until(() => connection.polls > 0, 'the reattached tab polling')
+
+    const before = connection.results.length
+    connection.enqueue({ jobId: 'job-no-save', code: 'return 1', save: true })
+    await until(() => connection.results.length > before, 'the no-save result')
+
+    const result = connection.results[connection.results.length - 1]
+    assert(result.ok === false, `a bridge with no save reported success: ${JSON.stringify(result)}`)
+    assert(result.code === 'SJS_LIVE_SAVE_FAILED', `wrong code: ${result.code}`)
+    assert(/no save/.test(result.message), `the cause was not named: ${result.message}`)
+    release2()
+  })()
+
   await step('releasing the workbook stops the tab offering itself', async () => {
     const seen = connection.polls
     release()
