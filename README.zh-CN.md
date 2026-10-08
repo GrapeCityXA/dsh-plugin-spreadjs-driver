@@ -16,12 +16,21 @@
 **关于 DSH 版本区间。** `dsh.engines.dsh` 与各 `@deepseek-ai/*` peer 区间写的是 `>=0.1.7-alpha.1`：
 本插件用到的 settings API 从 0.1.7 起才存在（见《被设计器驱动》），更早的宿主跑不了。
 
-关于这个写法有两点要直说，因为 peer 区间最容易被人误读。**DSH 并不校验它**：`peerDependencies`
-在全树只有两处读取，且都只取**名字**，而 `dsh-package-manifest` 明写 `engines.dsh` 是
-「declarative until a reader enforces it」。所以这个区间是**文档，不是闸门**——在 0.1.6 上照样
-装得上，然后插件安静地不工作；这也正是为什么下限要写下来，而不是指望它拦。另外，peer 里只列**运行时
-真正会解析**的包（`schemastery`，浏览器半还有 `react`）；那几个 `@deepseek-ai/dsh-*` 列出来，是因为
-宿主组合必须提供它们，不是因为 bundle 里 import 了它们。
+**这个区间是被校验的，而且只是最近才开始。** 在 DSH 0.1.7 上不校验——`peerDependencies` 的
+名字只在两处被读取、且都只取**名字**，`dsh-package-manifest` 也明写 `engines.dsh` 是
+「declarative until a reader enforces it」。但**0.2.0 开始校验**：`dsh plugin ls` 会拒绝让
+profile 启动一个声明区间与运行时对不上的插件——
+
+```
+Plugin X is incompatible with dsh 0.2.0-rc.2: peerDependencies {"…":"0.1.5-rc.2"} …
+profile startup denies it until you grant an exemption
+```
+
+——同时给了明确的豁口（`dsh plugin allow-version`）让你显式接受风险。这也正是为什么这里写的是
+`>=` 而不是钉死某一个版本：**在这里精确钉死不是一个承诺，而是一个运行时一往前走就起不来的插件。**
+
+另外，peer 里只列**运行时真正会解析**的包（`schemastery`，浏览器半还有 `react`）；那几个
+`@deepseek-ai/dsh-*` 列出来，是因为宿主组合必须提供它们，不是因为 bundle 里 import 了它们。
 
 ## 安装
 

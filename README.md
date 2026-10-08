@@ -18,15 +18,28 @@ ranges name `>=0.1.7-alpha.1`: this plugin uses settings APIs that only exist
 from 0.1.7 (see *Being driven by a designer*), so an older host cannot run it.
 
 Two things about that form are worth stating plainly, because the obvious reading
-of a peer range is wrong here. DSH does **not** enforce one: `peerDependencies`
-is read in exactly two places and both take only the *names*, and
-`dsh-package-manifest` says outright that `engines.dsh` is "declarative until a
-reader enforces it". So this range is documentation, not a gate — installing on
-0.1.6 succeeds and the plugin then misbehaves quietly, which is why the floor is
-written down rather than relied on. And the peers name only what the plugin
-actually resolves at run time (`schemastery`, plus `react` in the browser half);
-the `@deepseek-ai/dsh-*` packages are listed because the host composition must
-supply them, not because the bundle imports them.
+of a peer range is wrong here.
+
+**The range is enforced, and only recently.** On DSH 0.1.7 it was not — the
+`peerDependencies` names were read in two places that took only the *names*, and
+`dsh-package-manifest` said `engines.dsh` was "declarative until a reader enforces
+it". On **0.2.0** it is: `dsh plugin ls` refuses to let a profile start a plugin
+whose declared range does not match the running runtime —
+
+```
+Plugin X is incompatible with dsh 0.2.0-rc.2: peerDependencies {"…":"0.1.5-rc.2"} …
+profile startup denies it until you grant an exemption
+```
+
+— with an explicit escape hatch (`dsh plugin allow-version`) for accepting the
+risk anyway. That is why these ranges are written as `>=` rather than pinned to
+one release: an exact pin is not a promise here, it is a plugin that will not
+start once the runtime moves on.
+
+The peers also name only what the plugin actually resolves at run time
+(`schemastery`, plus `react` in the browser half); the `@deepseek-ai/dsh-*`
+packages are listed because the host composition must supply them, not because
+the bundle imports them.
 
 ## Install
 
