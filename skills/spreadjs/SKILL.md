@@ -392,24 +392,7 @@ plugin:
 ```js
 // chart — the data range is an ARGUMENT of charts.add
 const chart = s.charts.add('c1', GC.Spread.Sheets.Charts.ChartType.columnClustered, 260, 20, 380, 240, 'A1:B5')
-
-// EVERY chart property follows one shape: read it, change a field, set it back.
-// Calling an accessor with no argument returns the current object.
-const title = chart.title(); title.text = '季度销量'; chart.title(title)
-
-// A pie with share labels and a legend. These members are the ones a chart task
-// otherwise sends you into the reference for, so they are here instead:
-// ChartType.pie (= 10), dataLabels.showPercentage, and the two position enums.
-const pie = s.charts.add('c2', GC.Spread.Sheets.Charts.ChartType.pie, 260, 280, 380, 240, 'A1:B5')
-const labels = pie.dataLabels()
-labels.showPercentage = true
-labels.showCategoryName = true
-labels.position = GC.Spread.Sheets.Charts.DataLabelPosition.outsideEnd
-pie.dataLabels(labels)
-const legend = pie.legend()
-legend.visible = true
-legend.position = GC.Spread.Sheets.Charts.LegendPosition.right
-pie.legend(legend)
+const title = chart.title(); title.text = '季度销量'; chart.title(title)   // read → mutate → set back
 
 // pivot — sourceData is a table name (or an absolute-range formula)
 d.tables.add('tableSales', 0, 0, 5, 2)
@@ -420,11 +403,6 @@ pt.add('地区', '地区', GC.Spread.Pivot.PivotTableFieldType.rowField)
 pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, GC.Pivot.SubtotalType.sum)
 layout.slicers.add('sl1', 'pt1', '地区', GC.Spread.Sheets.Slicers.SlicerStyles.light1(), GC.Spread.Sheets.Slicers.SlicerType.pivotTable)
 ```
-
-If you need a member not named above, the reference answers it in one read — but
-anchor the glob at the skill's own directory (`path: "<skill dir>/reference"`).
-Without `path` it searches the working directory, finds nothing, and looks like
-the file does not exist; *Unknown SpreadJS API* below is that mistake in full.
 
 There is no `series().add(name, range)` / `categoryNames` path — pass the range to
 `charts.add`. `chart.x()/y()/width()/height()` report geometry, and
