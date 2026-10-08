@@ -140,6 +140,15 @@ where nobody is watching a designer.
    further edits — re-export rather than assuming it is current. Tool success is
    not correctness evidence — verify task-specific assertions.
 
+   **Verify by reading back, not by re-deriving.** Reading a figure out of the
+   engine and then re-adding those numbers yourself is not a second opinion — it
+   is the same opinion formed more slowly, and it is expensive: in a measured
+   session it was the single largest block of wall time in the whole task, larger
+   than every tool call combined. The value came out of the workbook — so ask the
+   workbook again (the same figure computed a different way, a `sjs_status` range
+   check, a formula you read back) if something looks wrong. Arithmetic in the
+   transcript proves nothing that a read does not prove better.
+
 A `format: "png"` snapshot is the engine's own rendering in a real browser, so
 fonts, weights and colours are the real ones — no flattening, no substitution.
 The png also shows the engine's *Evaluation Version* watermark (see above); the
@@ -300,6 +309,40 @@ return { sum: s.getValue(50000, 0) }   // without the resume above this is null
 The workbook is persisted only after the batch ends, so stored and exported values
 are always fully calculated — a later `sjs_status`/`sjs_export`, or a fresh read in
 the *next* tool call, always sees the real numbers.
+
+### Aggregate in the sheet, not in a loop you then throw away
+
+When the numbers you compute **are the deliverable** — counts by category, totals
+per month, anything that ends up in the table the user keeps — put the formula in
+the sheet rather than looping in JavaScript and writing the result as a literal.
+
+A literal is a photograph of one moment: the user cannot see how it was derived,
+and it does not follow the data when a row changes. A formula is the derivation
+itself, recalculated whenever the sheet is opened. Same effort for you, a
+different object at the end.
+
+The batch suspension above is the only thing in the way, and it costs one line:
+
+```js
+const data = sheet('数据')                    // the raw rows
+const stats = sheet('统计')                   // create it first if it does not exist
+const src = data.name()                       // read the name, do not retype it
+const cats = ['10斤', '5斤', '10斤礼盒', '5斤礼盒']
+
+for (const [i, name] of cats.entries()) {
+  const row = i + 1                           // row 0 holds the header
+  stats.setValue(row, 0, name)
+  stats.setFormula(row, 1, `=COUNTIF(${src}!$B:$B, $A${row + 1})`)
+  stats.setFormula(row, 2, `=SUMIF(${src}!$B:$B, $A${row + 1}, ${src}!$C:$C)`)
+}
+
+spread.resumeCalcService()                    // the one recalculation; cheap
+return { first: stats.getValue(1, 1) }        // without the resume above this reads null
+```
+
+Keep the JavaScript loop for a number that only goes into **your reply** — a total
+you read once and report, where nothing needs to survive in the workbook. The rule
+is about where the result lives, not about which is more accurate.
 
 Operations that name the **same workbook run one at a time, in arrival order**;
 different workbooks still run in parallel. Issue parallel `sjs_execute` calls
