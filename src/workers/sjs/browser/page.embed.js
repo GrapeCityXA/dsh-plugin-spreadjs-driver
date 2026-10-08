@@ -34,6 +34,67 @@ function messageOf(error) {
   return String(error);
 }
 
+/**
+ * Which line of the caller's script a failure came from.
+ *
+ * A failure raised INSIDE SpreadJS names an internal method the script never
+ * wrote — one real report read `Cannot read properties of undefined (reading
+ * 'getRowCount')` while `getRowCount` appeared in neither the submitted script
+ * nor the plugin, and the model spent three retries guessing the statement.
+ *
+ * The code runs through `new Function`, so the engine's frames for it carry
+ * `<anonymous>:LINE:COL`. Ahead of the caller's first line sit the wrapper the
+ * engine synthesizes around a `new Function` body and this file's own prelude.
+ * The prelude is known; the wrapper is not ours — it is whatever the engine
+ * emits — so it is MEASURED once (one throw, cached) rather than assumed. It
+ * currently comes out as 2, on both this path and the live one.
+ *
+ * If it cannot be measured the location is omitted and only the message is
+ * reported: a line number that is off by the wrapper reads as fact and is worse
+ * than no line at all.
+ *
+ * Mirrored in `src/client/executor.ts`; this file ships as a plain asset and
+ * cannot import from it.
+ */
+const PRELUDE_LINES = 1; // 'return (async () => {\n'
+let wrapperLines; // undefined = not measured yet, -1 = could not be measured
+
+function measuredWrapperLines() {
+  if (wrapperLines === undefined) {
+    wrapperLines = -1;
+    try {
+      new Function('throw new Error("probe")')();
+    } catch (error) {
+      const found = /<anonymous>:(\d+):\d+/.exec((error && error.stack) || '');
+      if (found) wrapperLines = Number(found[1]) - 1;
+    }
+  }
+  return wrapperLines < 0 ? undefined : wrapperLines;
+}
+
+/**
+ * ` — from your line N: <source>` naming the deepest frame that is the caller's
+ * own code, or '' when it cannot be located.
+ *
+ * Empty rather than approximate: a line number off by the wrapper count is worse
+ * than none, because it reads as fact.
+ */
+function locateInUserCode(error, code) {
+  const stack = error && error.stack;
+  const wrapper = measuredWrapperLines();
+  if (typeof stack !== 'string' || wrapper === undefined) return '';
+  const lines = code.split('\n');
+  const frames = stack.matchAll(/<anonymous>:(\d+):\d+/g);
+  for (const frame of frames) {
+    const line = Number(frame[1]) - wrapper - PRELUDE_LINES;
+    // A frame outside the caller's own range is the wrapper itself, not their code.
+    if (line >= 1 && line <= lines.length) {
+      return ' — from your line ' + line + ': ' + (lines[line - 1] || '').trim();
+    }
+  }
+  return '';
+}
+
 /** Io-module errors carry their text in `errorMessage` (or only in `stack`). */
 function ioErrorMessage(error) {
   if (error && typeof error === 'object') {
@@ -941,7 +1002,7 @@ window.__H = {
         returned = await fn(spread, spread, GC, sheet, io, sandboxConsole, summarize);
       } catch (error) {
         if (error && error.sjsCode) throw error;
-        throw fail('SJS_SCRIPT_ERROR', 'script failed: ' + messageOf(error));
+        throw fail('SJS_SCRIPT_ERROR', 'script failed: ' + messageOf(error) + locateInUserCode(error, code));
       }
     } finally {
       endBatch(spread, suspended);

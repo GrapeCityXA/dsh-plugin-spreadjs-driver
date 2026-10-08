@@ -559,7 +559,7 @@ not free text.
 | `INVALID_EXECUTION_SOURCE` | Both or neither of `code` / `codeFile` supplied | Provide exactly one. |
 | `SESSION_SCOPE_DENIED`, `FILE_PERMISSION_DENIED` | Path outside the session workspace / not readable | Use an in-workspace path or ask the user to grant access; do not retry the same path. |
 | `CODE_FILE_READ_FAILED` | `codeFile` unreadable | Fix the file path. |
-| `SJS_SCRIPT_ERROR` | `sjs_execute` threw or had a syntax error | Read the message, fix the code, re-run. Often an API you guessed — verify it first. |
+| `SJS_SCRIPT_ERROR` | `sjs_execute` threw or had a syntax error | Read the message, fix the code, re-run. Often an API you guessed — verify it first. The message names the failing line (`… — from your line 7: const s = sheet('x')`), and when the failure came from inside SpreadJS that is the ONLY thing identifying it: the message will name a method your script never wrote, so go by the line, not by the symbol. |
 | `SJS_SHEET_NOT_FOUND` | Named sheet absent (also raised by `sheet(name)` with no match) | Confirm the real sheet name via `sjs_status`. |
 | `SJS_SHEET_NAME_INVALID` | The name has a character Excel forbids (`: \ / ? * [ ]`), is empty, is over 31 characters, or starts/ends with `'` | Pick a name made of the offending characters' absence — the message names them. |
 | `SJS_SHEET_LIMIT_EXCEEDED` | A write targets a row past 1,048,576 or a column past 16,384 | That is the spreadsheet ceiling; write less, or split across sheets. |

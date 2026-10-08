@@ -294,13 +294,36 @@ async function run() {
     await until(() => connection.results.length === 4, 'the thrown result')
     const result = connection.results[3]
     assert(result.ok === false && result.code === 'SJS_SCRIPT_ERROR', `got ${JSON.stringify(result)}`)
-    assert(result.message === 'boom', `the message was mangled: ${result.message}`)
+    // The message now carries the failing line as well; the cause must survive intact.
+    assert(result.message.startsWith('boom'), `the message was mangled: ${result.message}`)
+  })()
+
+  await step('a script error names the line of the caller\'s code that raised it', async () => {
+    // Without this the report can be unactionable: a failure raised inside
+    // SpreadJS names a method the caller never wrote, and one real report of
+    // exactly that shape cost three retries.
+    const code = 'const a = 1\nconst b = 2\nthrow new Error("kara")\nconst c = 3'
+    const before = connection.results.length
+    connection.enqueue({ jobId: 'job-line', code })
+    await until(() => connection.results.length > before, 'the located result')
+
+    const result = connection.results[connection.results.length - 1]
+    assert(result.code === 'SJS_SCRIPT_ERROR', `got ${JSON.stringify(result)}`)
+    assert(result.message.includes('kara'), `the cause was lost: ${result.message}`)
+    assert(result.message.includes('from your line 3'),
+      `the failing line was not reported (expected "from your line 3"): ${result.message}`)
+    assert(result.message.includes('throw new Error('),
+      `the offending source line was not quoted: ${result.message}`)
   })()
 
   await step('a job for a workbook this tab does not hold is refused, not run', async () => {
+    // Counted relative to the current length rather than pinned to an ordinal:
+    // a step inserted above used to shift every index below it, and the failure
+    // surfaced as this assertion reading someone else's result.
+    const before = connection.results.length
     connection.enqueue({ jobId: 'job-5', code: 'return 1', target: 'somebody-elses' })
-    await until(() => connection.results.length === 5, 'the refusal')
-    const result = connection.results[4]
+    await until(() => connection.results.length > before, 'the refusal')
+    const result = connection.results[connection.results.length - 1]
     assert(result.ok === false && result.code === 'SJS_LIVE_NO_WORKBOOK', `got ${JSON.stringify(result)}`)
   })()
 

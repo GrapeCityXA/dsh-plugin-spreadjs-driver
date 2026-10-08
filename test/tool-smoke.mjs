@@ -331,6 +331,23 @@ await step('sjs_execute classifies a thrown script error', async () => {
   assertErrorCode(result, 'SJS_SCRIPT_ERROR', 'thrown script error')
 })
 
+await step('a script error names the line of the caller\'s code that raised it', async () => {
+  // The message alone is not actionable when the failure comes from inside
+  // SpreadJS: it names a method the script never wrote. One real report read
+  // `Cannot read properties of undefined (reading 'getRowCount')` with no
+  // `getRowCount` anywhere in the script, and cost three retries.
+  const code = 'const a = 1\nconst b = 2\nthrow new Error("kara")\nconst c = 3'
+  const result = await callTool('sjs_execute', { file: 'ledger.ssjson', code })
+
+  assertErrorCode(result, 'SJS_SCRIPT_ERROR', 'thrown script error')
+  const message = JSON.stringify(result.content ?? result)
+  assert(message.includes('kara'), `the cause was lost: ${message}`)
+  assert(message.includes('from your line 3'),
+    `the failing line was not reported (expected "from your line 3"): ${message}`)
+  assert(message.includes('throw new Error('),
+    `the offending source line was not quoted: ${message}`)
+})
+
 await step('concurrent edits to one workbook all survive', async () => {
   // Each edit is a whole read-modify-write in its own process, so overlapping
   // edits used to overwrite each other while every call still reported success.

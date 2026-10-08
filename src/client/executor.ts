@@ -79,6 +79,67 @@ function messageOf(error: unknown): string {
 }
 
 /**
+ * Which line of the caller's script a failure came from.
+ *
+ * The message alone is not enough to act on. A failure raised INSIDE SpreadJS
+ * names an internal method the script never wrote — one real report read
+ * `Cannot read properties of undefined (reading 'getRowCount')` while
+ * `getRowCount` appeared in neither the submitted script nor this plugin, and the
+ * model spent three retries guessing which statement did it.
+ *
+ * The code runs through `new Function`, so the engine's frames for it carry
+ * `<anonymous>:LINE:COL`. Ahead of the caller's first line sit two things: the
+ * wrapper the engine synthesizes around a `new Function` body, and this file's
+ * own prelude. The prelude is known here; the wrapper is not ours — it is
+ * whatever the engine emits — so it is MEASURED once (one throw, cached) rather
+ * than assumed. It currently comes out as 2, on both this path and the worker's.
+ *
+ * If it cannot be measured the location is omitted and only the message is
+ * reported: a line number that is off by the wrapper reads as fact and is worse
+ * than no line at all.
+ */
+const PRELUDE_LINES = 1 // 'return (async () => {\n'
+
+/** Cached wrapper measurement: a count, or -1 when it could not be measured. */
+let wrapperLines: number | undefined
+
+function measuredWrapperLines(): number | undefined {
+  if (wrapperLines === undefined) {
+    wrapperLines = -1
+    try {
+      // Runs and throws immediately; the frame it produces is the only thing wanted.
+      new Function('throw new Error("probe")')()
+    } catch (error) {
+      const found = /<anonymous>:(\d+):\d+/.exec((error as { stack?: string }).stack ?? '')
+      if (found !== null && found[1] !== undefined) wrapperLines = Number(found[1]) - 1
+    }
+  }
+  return wrapperLines < 0 ? undefined : wrapperLines
+}
+
+/**
+ * ` — from your line N: <source>` naming the deepest frame that is the caller's
+ * own code, or `''` when it cannot be located.
+ *
+ * Empty rather than approximate on purpose: a line number that is off by the
+ * wrapper count is worse than none, because it reads as fact.
+ */
+function locateInUserCode(error: unknown, code: string): string {
+  const stack = (error as { stack?: unknown }).stack
+  const wrapper = measuredWrapperLines()
+  if (typeof stack !== 'string' || wrapper === undefined) return ''
+  const lines = code.split('\n')
+  for (const frame of stack.matchAll(/<anonymous>:(\d+):\d+/g)) {
+    const line = Number(frame[1]) - wrapper - PRELUDE_LINES
+    // A frame outside the caller's own range is the wrapper itself, not their code.
+    if (line >= 1 && line <= lines.length) {
+      return ` — from your line ${line}: ${(lines[line - 1] ?? '').trim()}`
+    }
+  }
+  return ''
+}
+
+/**
  * JSON-round-trip the returned value, the way the host side does, so a
  * non-serializable result fails this call instead of poisoning the transcript.
  */
@@ -148,7 +209,10 @@ export async function runAgainstProvider(
     return {
       ok: false,
       code: typeof code2 === 'string' ? code2 : 'SJS_SCRIPT_ERROR',
-      message: messageOf(error),
+      // The location matters most when the failure came from inside SpreadJS:
+      // the message then names a method the caller never wrote, and without the
+      // line there is nothing to act on but a retry.
+      message: messageOf(error) + locateInUserCode(error, code),
     }
   } finally {
     workbook.resumePaint?.()
