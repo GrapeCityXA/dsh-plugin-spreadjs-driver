@@ -471,6 +471,23 @@ await step('an aborted call fails promptly and leaves a usable engine behind', a
   assert(okJson(after, 'sjs_status after the abort').result.sheets.length >= 1, 'the engine still works after an abort')
 })
 
+await step('sjs_live_status explains an unreachable profile without the sidebar advice', async () => {
+  const result = await callTool('sjs_live_status', {})
+  const r = okJson(result, 'live status').result
+
+  // This harness boots the host half with no web server, so the live channel
+  // cannot mount — which is exactly the case the hint must NOT fire in. Telling
+  // the model to have the user open a file in the sidebar would be wrong advice
+  // for a profile that can never serve the live path; `reason` is the answer
+  // there instead.
+  assert(r.client === 'none', `expected no connected client, got ${JSON.stringify(r.client)}`)
+  if (r.transport === 'unmounted') {
+    assert(typeof r.reason === 'string' && r.reason.length > 0, 'an unmounted channel must explain itself')
+    assert(r.hint === undefined,
+      'the sidebar advice must not appear when the profile cannot serve the live path')
+  }
+})
+
 await rm(WORKSPACE, { recursive: true, force: true })
 await rm(OUTSIDE, { force: true })
 if (failures > 0) {

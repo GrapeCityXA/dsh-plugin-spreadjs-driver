@@ -98,6 +98,16 @@ takes no round trip, so it is cheaper than being wrong in either direction.
   it to be saved.
 - **`client: none`** → nobody is watching a designer. Use the file tools below.
   Do not keep re-checking, and do not edit a file expecting the user to see it.
+  **If the user's own words said they are looking at a sheet** — "this table",
+  "the sheet I have open", "当前这个表", "你看着改" — say so **once, before you
+  start**: nothing is connected, so this runs against a file and they will not
+  see it happen. The result carries a `hint` naming which of the two causes
+  applies and what fixes it — nothing open in the designer, or a bridge other
+  than this one (**including "None"**) selected in Settings → Spreadsheet
+  Editor. Pass that on rather than guessing at the cause, then go ahead with the
+  file path. Do not ask and wait: a file answer is almost always what they want;
+  they just need to know which one they are getting, because from their side the
+  two are indistinguishable until they look at the screen and find it unchanged.
 - **`transport: unmounted`** → this profile can never serve the live path. Use
   the file tools; do not try `sjs_live_execute` at all.
 

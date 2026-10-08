@@ -31,6 +31,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JsonValue } from '../service/types.ts'
 import { operationOutput } from '../tools/presentation.ts'
+import { BRIDGE_ID } from '../../shared/bridge.ts'
+import { readChosenBridge } from '../activation.ts'
 import type { LiveChannel } from './channel.ts'
 
 /**
@@ -71,6 +73,40 @@ export function liveStatusTool(ctx: Context, channel: LiveChannel) {
       // other line, and leaving it out is how the last field report spent ten
       // tool calls suspecting the browser.
       if (!reachability.ok) result.reason = reachability.reason
+
+      // Advice, not a verdict: a file answer is usually the right one, so this
+      // does not tell the model to stop — it supplies the one thing `client:
+      // none` cannot convey on its own. A file edit succeeds from every tool
+      // result while the user watches a sheet that never changes, so the two
+      // paths are indistinguishable from their side until they look up. Saying
+      // it here rather than only in SKILL.md puts it at the moment of the
+      // decision, in the artefact the model reads on every call.
+      //
+      // Guarded on the transport being up: an unmounted channel reports
+      // `client: none` too, but there the advice is wrong — opening a file in
+      // the sidebar cannot help a profile that can never serve the live path,
+      // and `reason` already explains that case.
+      if (reachability.ok && result.client === 'none') {
+        // `client: none` has two causes with opposite fixes, and the field alone
+        // cannot tell them apart: either nothing is open in the designer, or the
+        // editor is handing the workbook to somebody else — including to nobody,
+        // which is what "None" in the bridge picker means. A real report lost
+        // time to the second one after being told the first, so the chosen
+        // bridge is read here and the hint names the cause that actually holds.
+        const chosen = readChosenBridge(ctx)
+        result.hint = chosen === ''
+          ? 'No bridge is selected in Settings → Spreadsheet Editor, so the editor hands the workbook '
+            + 'to nobody and nothing can be seen live. Pick this driver there to enable the live path; '
+            + 'until then this runs against a file the user cannot see. If their wording implied they '
+            + 'are looking at a sheet, say so once before going ahead.'
+          : chosen !== undefined && chosen !== BRIDGE_ID
+            ? `The bridge selected in Settings → Spreadsheet Editor is "${chosen}", so this plugin is `
+              + 'not being handed the workbook. Until that changes, this runs against a file the user '
+              + 'cannot see — say so once, if their wording implied they are looking at a sheet.'
+            : "No designer has a spreadsheet open, so this runs against a file the user cannot see. "
+              + 'If their wording implied they are looking at a sheet, say so once and name the fix '
+              + "(open it in the sidebar's Spreadsheet tab) before going ahead."
+      }
 
       return {
         ok: true as const,
