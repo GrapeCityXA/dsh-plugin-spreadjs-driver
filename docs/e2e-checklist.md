@@ -93,6 +93,27 @@ IHDR 尺寸，14 步。reader 在 `test/lib/`，不 import `src/`、`lib/` 或�
 - **已接入（task 7）**：`sjs_screenshot` png 在 ①当前路由声明 image 输入（经 `llm.resolveModelInfo`）②attachments 存储已挂 ③部署接受 `image/png` 时，自动把 png 存为 durable attachment 并附 image block；任一条件不满足则静默回退纯文本 + 文件路径（附 PDF 兜底建议）。**CI 已无头覆盖两条路径**（无 store → 文本回退；stub store + image 路由 → image block + saveImage 收到真实字节）。
 - **仍待人工**：在**真实视觉模型会话**让模型截图并"看"内容，确认 png 真被模型读到、无 store 的纯文本回退下模型能用 `read_image`/路径接续。客户端内联渲染归阶段 2。
 
+### ③ 两条路径的 SpreadJS 全局面是否一致（只能人工，且必须做）
+
+**背景**：`sjs_execute` 跑在插件自己的无头页里，`sjs_live_execute` 跑在**编辑器那个页**里。两者加载的 SpreadJS 不是同一份，**全局面可以不同**。
+
+**已经踩过一次（2026-10-08）**：`SKILL.md` 的透视表例子用 `GC.Pivot.SubtotalType.sum`。文件引擎里可以（`test/worker-smoke.mjs` 有一模一样的一行且通过），**设计器的页面里 `GC.Pivot` 是 `undefined`** —— `GC.Spread.Pivot` 有 84 个键但没有 `SubtotalType`。模型照例子写、抛错、自己探测出原因、用字面量 `8` 绕过，代价是十几次迭代里的一部分。
+
+**为什么没有自动化**：live 侧的引擎是编辑器页面里那一份，本仓库没有浏览器测试环境，编辑器仓库也没有（vitest 无 DOM）。所以这一条**只能人工**：打开设计器，用 `sjs_live_execute` 跑一次下面的探针，和文件侧对照。
+
+```js
+const keys = (o) => (o === undefined ? null : Object.keys(o).length)
+return {
+  hasGC_Pivot: typeof GC.Pivot,                 // 文件引擎: "object"；设计器页面: 实测 "undefined"
+  spreadPivotKeys: keys(GC.Spread.Pivot),
+  hasSubtotalType: GC.Spread.Pivot?.SubtotalType !== undefined,
+}
+```
+
+通过标准：**skill 例子用到的每个符号，两边都存在**。任一边缺，例子就得改成两边都能跑的形式（像这次改成传值），而不是只在一边验过就写进文档。
+
+> 规律：**例子只在文件路径验过是不算数的。** 本仓库的自动化全部落在文件路径上，侧边栏设计器里那一份从来没有 CI。
+
 ## 6. 记录模板
 
 ```

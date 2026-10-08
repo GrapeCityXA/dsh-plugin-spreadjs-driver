@@ -505,6 +505,31 @@ await step('sjs_live_status explains an unreachable profile without the sidebar 
   }
 })
 
+await step('the pivot shape SKILL.md documents runs as written', async () => {
+  // Pins the example the skill actually shows, not an equivalent one: the
+  // documented call is what a model copies verbatim, and the version of it that
+  // shipped before this test passed a subtotal ENUM the designer's page does not
+  // expose — a failure only the live path could show (see the note below).
+  const file = 'pivot-shape.ssjson'
+  okJson(await callTool('sjs_new', { file }), 'sjs_new for the pivot shape')
+  const code = [
+    "const d = sheet()",
+    "d.setArray(0, 0, [['地区', '金额'], ['华东', 100], ['华北', 200], ['华东', 150]])",
+    "d.tables.add('tableSales', 0, 0, 4, 2)",
+    "spread.addSheet(spread.getSheetCount(), new GC.Spread.Sheets.Worksheet('PivotLayout'))",
+    'const layout = spread.getSheet(spread.getSheetCount() - 1)',
+    "const pt = layout.pivotTables.add('pt1', 'tableSales', 1, 0, GC.Spread.Pivot.PivotTableLayoutType.outline, GC.Spread.Pivot.PivotTableThemes.medium8)",
+    "pt.add('地区', '地区', GC.Spread.Pivot.PivotTableFieldType.rowField)",
+    // The skill passes the VALUE (8 = sum) because the enum's `GC.Pivot` root is
+    // absent from the designer's page. This engine has it, which is exactly why
+    // this test cannot catch that divergence — the live half has no harness here.
+    "pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, 8)",
+    'return { pivots: layout.pivotTables.all().length }',
+  ].join('\n')
+  const result = okJson(await callTool('sjs_execute', { file, code }), 'pivot shape')
+  assert(result.result.pivots === 1, `the pivot was not created: ${JSON.stringify(result.result)}`)
+})
+
 await rm(WORKSPACE, { recursive: true, force: true })
 await rm(OUTSIDE, { force: true })
 if (failures > 0) {
