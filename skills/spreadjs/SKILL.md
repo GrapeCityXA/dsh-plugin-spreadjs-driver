@@ -400,7 +400,15 @@ spread.addSheet(spread.getSheetCount(), new GC.Spread.Sheets.Worksheet('PivotLay
 const layout = spread.getSheet(spread.getSheetCount() - 1)
 const pt = layout.pivotTables.add('pt1', 'tableSales', 1, 0, GC.Spread.Pivot.PivotTableLayoutType.outline, GC.Spread.Pivot.PivotTableThemes.medium8)
 pt.add('地区', '地区', GC.Spread.Pivot.PivotTableFieldType.rowField)
-pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, GC.Pivot.SubtotalType.sum)
+// `8` is `sum`. The subtotal enum documents as `GC.Pivot.SubtotalType` — a
+// SEPARATE root from `GC.Spread.Pivot` — and that root exists in the file
+// engine's page but NOT in the designer's page the live path runs in, where
+// `typeof GC.Pivot` is `undefined`. So the reference-shaped call works with
+// `sjs_execute` and throws `Cannot read properties of undefined (reading
+// 'SubtotalType')` with `sjs_live_execute`: pass the value, which both accept.
+// The other members' numbers are in
+// reference/<doc set>/enums/GC.Pivot.SubtotalType.md.
+pt.add('金额', '金额', GC.Spread.Pivot.PivotTableFieldType.valueField, 8)
 layout.slicers.add('sl1', 'pt1', '地区', GC.Spread.Sheets.Slicers.SlicerStyles.light1(), GC.Spread.Sheets.Slicers.SlicerType.pivotTable)
 ```
 
