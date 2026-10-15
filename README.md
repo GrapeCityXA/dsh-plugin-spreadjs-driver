@@ -2,7 +2,7 @@
 
 [GitHub](https://github.com/GrapeCityXA/dsh-plugin-spreadjs-driver) · npm: `@grapecity-software/dsh-spreadjs-driver`
 
-[中文说明](#中文说明) · [English](#english)
+[中文说明](#中文说明) · [English](#english) · [版本记录 / Release Notes](CHANGELOG.md)
 
 让 AI 在 DSH Web UI 中打开、新建和操作 editor 提供的真实 SpreadJS 工作簿。
 
