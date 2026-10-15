@@ -2,7 +2,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 
 export interface SjsOperationResult {
   readonly ok: true
-  readonly operation: 'live' | 'live-status'
+  readonly operation: 'live' | 'live-status' | 'live-open'
   readonly file: string
   readonly result: JsonValue
 }

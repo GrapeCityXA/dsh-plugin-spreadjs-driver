@@ -15,7 +15,7 @@ const DEFINITIONS = [
   {
     name: 'spreadjs',
     description:
-      'Inspect and edit the workbook open in the DSH SpreadJS editor through sjs_live_status and sjs_live_execute. Requires an editor-supplied Workbook in the user browser. Use for cells, formulas, sheets and formatting; save only through the editor when requested.',
+      'Open, inspect and edit workbooks through sjs_live_open, sjs_live_status and sjs_live_execute. Can copy a prepared template into a new workspace file; requires the DSH web editor for Workbook initialization and execution. Save edits through the editor when requested.',
   },
 ] as const
 

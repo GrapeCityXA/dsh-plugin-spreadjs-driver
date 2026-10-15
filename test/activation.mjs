@@ -115,7 +115,7 @@ function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
 
 
 const registered = host => [...host.tools.keys()].sort()
-const LIVE_TOOLS = ['sjs_live_execute', 'sjs_live_status']
+const LIVE_TOOLS = ['sjs_live_execute', 'sjs_live_open', 'sjs_live_status']
 function mount(host) {
   const config = resolveConfig({})
   livePlugin.apply(host.ctx, config)

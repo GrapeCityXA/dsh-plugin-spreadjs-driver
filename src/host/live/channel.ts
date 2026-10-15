@@ -76,6 +76,7 @@ export interface LiveTransportHost {
 }
 
 interface TrackedTab {
+  readonly editorSessions: readonly string[]
   readonly targets: readonly string[]
   /** What the tab said each offered workbook is holding; may be empty. */
   readonly workbooks: readonly LiveOfferedWorkbook[]
@@ -88,7 +89,8 @@ interface PendingJob {
 }
 
 /** A job can go to a tab only when that tab holds what the job asks for. */
-function serves(targets: readonly string[], job: LiveJob): boolean {
+function serves(targets: readonly string[], job: LiveJob, editorSessions: readonly string[]): boolean {
+  if (job.open !== undefined) return editorSessions.includes(job.open.sessionId)
   if (job.target !== undefined) return targets.includes(job.target)
   // Untargeted work goes to any tab with a workbook: the caller asked for
   // "whatever is open", and a tab with nothing open has nothing to run it on.
@@ -123,6 +125,7 @@ function deferred<T>(): Deferred<T> {
 
 /** Options for one live execution. */
 export interface LiveExecuteOptions {
+  readonly open?: LiveJob['open']
   /** Attached workbook id to run against; omit to accept whichever tab answers. */
   readonly target?: string
   /** Write the workbook back to its file after the code runs. */
@@ -270,7 +273,13 @@ export class LiveChannel {
    */
   async execute(code: string, options: LiveExecuteOptions): Promise<LiveExecution> {
     const target = options.target
-    this.assertServable(target)
+    if (!this.transport.ok && options.open !== undefined) {
+      throw new SjsError(`The live channel is unavailable: ${this.transport.reason}`, 'SJS_LIVE_NO_TRANSPORT')
+    }
+    if (options.open === undefined) this.assertServable(target)
+    else if (!this.liveTabs().some(tab => tab.editorSessions.includes(options.open!.sessionId))) {
+      throw new SjsError('Open the calling chat in the DSH web UI with the SpreadJS editor installed and this Driver selected.', 'SJS_LIVE_NO_EDITOR')
+    }
 
     if (this.queue.length >= MAX_QUEUED_JOBS) {
       throw new SjsError(
@@ -282,6 +291,7 @@ export class LiveChannel {
     const job: LiveJob = {
       jobId: randomUUID(),
       code,
+      ...(options.open === undefined ? {} : { open: options.open }),
       ...(target === undefined ? {} : { target }),
       ...(options.save === undefined ? {} : { save: options.save }),
     }
@@ -367,6 +377,9 @@ export class LiveChannel {
         'SJS_LIVE_UNKNOWN_TARGET',
       )
     }
+    if (target === undefined && !live.some(tab => tab.targets.length > 0)) {
+      throw new SjsError('The editor is connected but has no loaded workbook. Use sjs_live_open first.', 'SJS_LIVE_NO_WORKBOOK')
+    }
   }
 
   private dispatch(endpoint: string, payload: unknown): RpcOutcome {
@@ -380,12 +393,13 @@ export class LiveChannel {
       return failure('SJS_LIVE_BAD_REQUEST', 'a poll payload must be { tabId: string, targets: string[] }')
     }
     this.tabs.set(payload.tabId, {
+      editorSessions: payload.editorSessions ?? [],
       targets: payload.targets,
       workbooks: payload.workbooks ?? [],
       seenAt: Date.now(),
     })
 
-    const index = this.queue.findIndex((job) => serves(payload.targets, job))
+    const index = this.queue.findIndex((job) => serves(payload.targets, job, payload.editorSessions ?? []))
     if (index < 0) return { ok: true, value: null }
     const [job] = this.queue.splice(index, 1)
     return { ok: true, value: job }

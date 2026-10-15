@@ -104,6 +104,14 @@ try {
 
   await step('packed bundle exposes resolveConfig and default config', async () => { /* asserted above */ })
 
+  await step('installed bundle creates workbooks using its shipped blank template', async () => {
+    const run = spawnSync(process.execPath, [join(ROOT, 'test/open-workbook-smoke.mjs')], {
+      cwd: ROOT, encoding: 'utf8',
+      env: { ...process.env, SJS_OPEN_TEST_ENTRY: pathToFileURL(join(installed, 'lib/index.js')).href },
+    })
+    assert(run.status === 0, run.stderr || run.stdout || run.error?.message || 'installed open test failed')
+  })
+
   await step('spreadjs skill registers from the packed skills/ tree', async () => {
     const summaries = await ctx.skills.list({ cwd: WORKSPACE })
     const skill = summaries.find((s) => s.name === 'spreadjs')

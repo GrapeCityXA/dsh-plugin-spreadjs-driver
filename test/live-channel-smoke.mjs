@@ -416,6 +416,22 @@ async function run() {
     assert(JSON.stringify(ids) === JSON.stringify(['one', 'three', 'two']), `got ${JSON.stringify(ids)}`)
   })()
 
+  await step('an empty editor can open a workbook only for its visible chat', async () => {
+    const host = fakeHost()
+    const channel = new LiveChannel()
+    channel.register(host)
+    await host.call('poll', { tabId: 'editor', targets: [], editorSessions: ['chat-a'] })
+    const open = { sessionId: 'chat-a', address: 'dsh-resource://file/session/chat-a/new.xlsx', timeoutMs: 1000 }
+    const execution = channel.execute('', { open, timeoutMs: 1500 })
+    const wrong = await host.call('poll', { tabId: 'other', targets: ['spreadjs-designer'], editorSessions: ['chat-b'] })
+    assert(wrong.value === null, 'an opening job reached a different chat')
+    const claim = await host.call('poll', { tabId: 'editor', targets: [], editorSessions: ['chat-a'] })
+    assert(claim.value?.open?.address === open.address, 'empty editor did not receive the opening job')
+    await host.call('result', { jobId: claim.value.jobId, ok: true, value: { ready: true }, file: open.address })
+    assert((await execution).file === open.address, 'opening result was lost')
+    await rejects(() => channel.execute('', { open: { ...open, sessionId: 'absent' }, timeoutMs: 100 }), 'SJS_LIVE_NO_EDITOR')
+  })()
+
   // --- what the browser can reach ------------------------------------------
   await step('a request DSH would not serve is refused, and nothing runs', async () => {
     const host = fakeHost({ reject: () => 401 })

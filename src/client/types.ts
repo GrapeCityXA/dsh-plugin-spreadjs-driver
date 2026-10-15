@@ -66,8 +66,17 @@ export interface SpreadjsWorkbookProvider {
   getNamespace?(): unknown
   /** Absolute path of the open file, when there is one. */
   getActivePath?(): string | undefined
+  getSessionId?(): string | undefined
+  openWorkbook?(address: string, timeoutMs: number): Promise<void>
   /** Ask the owner to persist the live workbook to its file. */
-  save?(): Promise<void>
+  save?(lease?: string): Promise<void>
+  /** Acquire an exclusive edit lease from the workbook owner. */
+  acquireDriverLease?(): string
+  /** Release a lease acquired from the workbook owner. */
+  releaseDriverLease?(lease: string): void
+  /** Current owner state, when the editor exposes it. */
+  isDriverBusy?(): boolean
+  getDriverLeaseSignal?(lease: string): AbortSignal | undefined
 }
 
 /** What this plugin registers into the editor's roster. */

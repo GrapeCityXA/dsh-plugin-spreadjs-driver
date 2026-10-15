@@ -11,7 +11,7 @@ export const operationOutput = {
       operation: {
         type: 'string' as const,
         required: true,
-        enum: ['live', 'live-status'] as const,
+        enum: ['live', 'live-status', 'live-open'] as const,
       },
       file: { type: 'string' as const, required: true },
       result: { type: 'json' as const, required: true },

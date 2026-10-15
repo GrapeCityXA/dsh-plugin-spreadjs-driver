@@ -6,6 +6,7 @@ import { keepPresent } from '../activation.ts'
 import { LiveChannel } from './channel.ts'
 import { liveExecuteTool } from './tool.ts'
 import { liveStatusTool } from './status-tool.ts'
+import { liveOpenTool } from './open-tool.ts'
 
 export const inject = ['tools']
 export const name = 'spreadjs-live'
@@ -60,9 +61,11 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
     const dropStatus = ctx.tools.register(
       withSjsErrorContent(liveStatusTool(ctx, channel)),
     )
+    const dropOpen = ctx.tools.register(withSjsErrorContent(liveOpenTool(channel, config)))
     return () => {
       dropExecute()
       dropStatus()
+      dropOpen()
     }
   })
 }

@@ -228,12 +228,30 @@ async function run() {
   let activePath = 'C:/work/book.ssjson'
   let saves = 0
   let saveShouldFail = false
+  let heldLease
+  let heldController
+  let leasesAcquired = 0
+  let leasesReleased = 0
   const provider = {
     id: 'spreadjs-designer',
     getWorkbook: () => workbookReady ? currentWorkbook : undefined,
     getNamespace: () => ({ Spread: { Sheets: {} } }),
     getActivePath: () => activePath,
-    save: async () => {
+    acquireDriverLease: () => {
+      if (heldLease !== undefined) throw new Error('workbook busy')
+      heldLease = `lease-${++leasesAcquired}`
+      heldController = new AbortController()
+      return heldLease
+    },
+    releaseDriverLease: (lease) => {
+      assert(lease === heldLease, 'released the wrong lease')
+      heldLease = undefined
+      heldController = undefined
+      leasesReleased += 1
+    },
+    getDriverLeaseSignal: () => heldController?.signal,
+    save: async (lease) => {
+      assert(lease === heldLease && lease !== undefined, 'save did not receive the active lease')
       saves += 1
       if (saveShouldFail) throw new Error('disk is full')
     },
@@ -353,6 +371,47 @@ async function run() {
     workbookReady = true
   })()
 
+  await step('a busy editor rejects a competing job without touching its lease', async () => {
+    heldLease = 'another-driver'
+    const before = connection.results.length
+    const paintBefore = workbook.paint.length
+    connection.enqueue({ jobId: 'busy', code: 'throw new Error("must not run")', save: true })
+    await until(() => connection.results.length > before, 'the busy refusal')
+    assert(connection.results.at(-1).code === 'SJS_SESSION_BUSY', JSON.stringify(connection.results.at(-1)))
+    assert(heldLease === 'another-driver' && workbook.paint.length === paintBefore, 'competing work touched the owner')
+    heldLease = undefined
+  })()
+
+  await step('closing an editor interrupts an awaiting script before that script resolves', async () => {
+    const before = connection.results.length
+    let finishScript
+    globalThis.__spreadjsWaitForClose = new Promise(resolve => { finishScript = resolve })
+    try {
+      connection.enqueue({ jobId: 'await-close', code: 'await globalThis.__spreadjsWaitForClose; return 1' })
+      await until(() => heldLease !== undefined, 'an awaiting script holding the lease')
+      workbookReady = false
+      heldController.abort()
+      await until(() => connection.results.length > before, 'interruption before JS resolves')
+      assert(connection.results.at(-1).code === 'SJS_LIVE_INTERRUPTED', JSON.stringify(connection.results.at(-1)))
+      assert(heldLease === undefined, 'interrupted script left its lease held')
+    } finally {
+      finishScript(); workbookReady = true
+      delete globalThis.__spreadjsWaitForClose
+    }
+  })()
+
+  await step('closing the editor during save reports interruption and releases the lease', async () => {
+    const originalSave = provider.save
+    const before = connection.results.length
+    provider.save = async lease => { assert(lease === heldLease, 'missing lease'); workbookReady = false; throw new Error('editor closed') }
+    try {
+      connection.enqueue({ jobId: 'close-during-save', code: 'return 1', save: true })
+      await until(() => connection.results.length > before, 'the interrupted save')
+      assert(connection.results.at(-1).code === 'SJS_LIVE_INTERRUPTED', JSON.stringify(connection.results.at(-1)))
+      assert(heldLease === undefined, 'interrupted save left a lease held')
+    } finally { provider.save = originalSave; workbookReady = true }
+  })()
+
   for (const change of ['instance', 'path']) {
     await step('a document ' + change + ' change during async code prevents saving', async () => {
       const before = connection.results.length
@@ -365,7 +424,7 @@ async function run() {
         connection.enqueue({ jobId: 'switch-' + change, code: 'await globalThis.__spreadjsTestSwitch(); return 1', save: true })
         await until(() => connection.results.length > before, 'changed Workbook refusal')
         const result = connection.results.at(-1)
-        assert(result.ok === false && result.code === 'SJS_LIVE_WORKBOOK_CHANGED', JSON.stringify(result))
+        assert(result.ok === false && result.code === 'SJS_LIVE_INTERRUPTED', JSON.stringify(result))
         assert(saves === savesBefore, 'the replacement document was saved')
       } finally {
         currentWorkbook = workbook
@@ -402,7 +461,7 @@ async function run() {
     // report came back ok:true, "saving":true, and a file whose timestamp had
     // not moved — after which the model redid the whole task the other way.
     release()
-    const cannotSave = { id: 'spreadjs-designer', getWorkbook: () => workbook, getActivePath: () => 'C:/work/book.ssjson' }
+    const cannotSave = { ...provider, getWorkbook: () => workbook, save: undefined }
     const release2 = entry.attach(cannotSave)
     await until(() => connection.polls > 0, 'the reattached tab polling')
 
@@ -415,6 +474,38 @@ async function run() {
     assert(result.code === 'SJS_LIVE_SAVE_FAILED', `wrong code: ${result.code}`)
     assert(/no save/.test(result.message), `the cause was not named: ${result.message}`)
     release2()
+  })()
+
+  await step('every successful, failed and interrupted job released its lease', () => {
+    assert(heldLease === undefined, 'a job left the workbook locked')
+    assert(leasesAcquired === leasesReleased, `${leasesAcquired} leases acquired but ${leasesReleased} released`)
+  })()
+
+  await step('an empty editor receives an open request, waits for readiness and then serves jobs', async () => {
+    const blank = fakeConnection()
+    const blankRegistry = fakeRegistry()
+    const blankCtx = fakeContext(blank, blankRegistry)
+    contexts.push(blankCtx)
+    client.apply(blankCtx); blankCtx.activate()
+    let loaded = false
+    let opened
+    const blankProvider = {
+      ...provider,
+      getWorkbook: () => loaded ? workbook : undefined,
+      getSessionId: () => 'new-chat',
+      getActivePath: () => opened,
+      openWorkbook: async address => { await sleep(30); opened = address; loaded = true },
+    }
+    const detach = blankRegistry.entry.attach(blankProvider)
+    await until(() => blank.polls > 0, 'an empty editor polling')
+    const address = 'dsh-resource://file/session/new-chat/new.xlsx'
+    blank.enqueue({ jobId: 'open', code: '', open: { sessionId: 'new-chat', address, timeoutMs: 1000 } })
+    await until(() => blank.results.length === 1, 'the ready editor result')
+    assert(blank.results[0].ok && blank.results[0].file === address && loaded, 'open succeeded before the editor was ready')
+    blank.enqueue({ jobId: 'edit-new', code: 'return sheet().name()' })
+    await until(() => blank.results.length === 2, 'work against the opened workbook')
+    assert(blank.results[1].ok && blank.results[1].value === 'Sheet1', JSON.stringify(blank.results[1]))
+    detach()
   })()
 
   await step('releasing the workbook stops the tab offering itself', async () => {

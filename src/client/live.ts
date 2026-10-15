@@ -110,6 +110,18 @@ async function runJob(
   job: LiveJob,
 ): Promise<LiveJobResult> {
   const available = providers()
+  if (job.open !== undefined) {
+    const request = job.open
+    const editor = available.find(candidate => candidate.openWorkbook !== undefined && candidate.getSessionId?.() === request.sessionId)
+    if (editor === undefined) return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_NO_EDITOR', message: 'The requested chat is no longer visible in this editor.' }
+    try {
+      await editor.openWorkbook!(request.address, request.timeoutMs)
+      if (!providers().includes(editor)) throw new Error('The editor bridge was disconnected while opening the workbook')
+      return { jobId: job.jobId, ok: true, value: { ready: true }, file: request.address }
+    } catch (error) {
+      return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_OPEN_FAILED', message: messageOf(error) }
+    }
+  }
   const provider = job.target === undefined
     ? available[0]
     : available.find((candidate) => candidate.id === job.target)
@@ -125,47 +137,90 @@ async function runJob(
     }
   }
 
-  const workbook = provider.getWorkbook()
-  const file = provider.getActivePath?.()
-  const outcome = await runAgainstProvider(provider, job.code)
-  if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
-
-  // An async snippet can outlive a tab switch or bridge selection. Never save
-  // or attribute its result to the different document now behind the proxy.
-  if (!providers().includes(provider) || provider.getWorkbook() !== workbook || provider.getActivePath?.() !== file) {
+  if (provider.acquireDriverLease === undefined || provider.releaseDriverLease === undefined) {
     return {
-      jobId: job.jobId, ok: false, code: 'SJS_LIVE_WORKBOOK_CHANGED',
-      message: 'The editor changed workbooks during execution. Changes may remain in the previous workbook; nothing was saved by this job.',
-    }
-  }
-  if (job.save === true) {
-    // A bridge with no `save` is a failure, not a skip. Asking for a save and
-    // being handed a success that wrote nothing is the worst of the three
-    // outcomes: the caller cannot tell it from a real write.
-    if (provider.save === undefined) {
-      return {
-        jobId: job.jobId,
-        ok: false,
-        code: 'SJS_LIVE_SAVE_FAILED',
-        message: `the edit is in the browser, but the bridge holding ${file ?? 'the workbook'} `
-          + 'cannot write it back (it provides no save), so the file was not written',
-      }
-    }
-    try {
-      await provider.save()
-    } catch (error) {
-      return {
-        jobId: job.jobId,
-        ok: false,
-        code: 'SJS_LIVE_SAVE_FAILED',
-        message: `the edit is in the browser but writing ${file ?? 'the workbook'} back failed: ${messageOf(error)}`,
-      }
+      jobId: job.jobId, ok: false, code: 'SJS_LIVE_LEASE_UNSUPPORTED',
+      message: 'The editor does not support exclusive Driver leases; update the SpreadJS editor before running live work.',
     }
   }
 
-  return file === undefined
-    ? { jobId: job.jobId, ok: true, value: outcome.value }
-    : { jobId: job.jobId, ok: true, value: outcome.value, file }
+  let lease: string
+  try {
+    lease = provider.acquireDriverLease()
+  } catch (error) {
+    return { jobId: job.jobId, ok: false, code: 'SJS_SESSION_BUSY', message: messageOf(error) }
+  }
+
+  let workbook: unknown
+  let file: string | undefined
+  let ownerSignal: AbortSignal | undefined
+  function awaitOwner<T>(work: Promise<T>): Promise<T> {
+    const signal = ownerSignal
+    if (signal === undefined) return work
+    return new Promise<T>((resolve, reject) => {
+      const abort = (): void => { reject(new Error('The editor destroyed this workbook')) }
+      if (signal.aborted) abort()
+      else signal.addEventListener('abort', abort, { once: true })
+      // Attach both handlers even if already aborted: outstanding JS may finish
+      // later, but its eventual rejection must not become unhandled.
+      work.then(value => { signal.removeEventListener('abort', abort); resolve(value) },
+        error => { signal.removeEventListener('abort', abort); reject(error) })
+    })
+  }
+  const interrupted = (): boolean => {
+    try {
+      return ownerSignal?.aborted === true || !providers().includes(provider)
+        || provider.getWorkbook() !== workbook || provider.getActivePath?.() !== file
+    } catch { return true }
+  }
+  const interruption = (): LiveJobResult => ({
+    jobId: job.jobId, ok: false, code: 'SJS_LIVE_INTERRUPTED',
+    message: 'The editor closed or changed workbooks during Driver work. Reopen the file to recover any snapshot kept by the editor. This job was interrupted; verify its changes before continuing.',
+  })
+  try {
+    workbook = provider.getWorkbook()
+    file = provider.getActivePath?.()
+    ownerSignal = provider.getDriverLeaseSignal?.(lease)
+    if (workbook === undefined || workbook === null) {
+      return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_NO_WORKBOOK', message: 'The editor has no loaded workbook.' }
+    }
+    const outcome = await awaitOwner(runAgainstProvider(provider, job.code))
+    if (interrupted()) return interruption()
+    if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
+
+    if (job.save === true) {
+      if (provider.save === undefined) {
+        return {
+          jobId: job.jobId,
+          ok: false,
+          code: 'SJS_LIVE_SAVE_FAILED',
+          message: `the edit is in the browser, but the bridge holding ${file ?? 'the workbook'} `
+            + 'cannot write it back (it provides no save), so the file was not written',
+        }
+      }
+      try {
+        await awaitOwner(provider.save(lease))
+      } catch (error) {
+        if (interrupted()) return interruption()
+        return {
+          jobId: job.jobId,
+          ok: false,
+          code: 'SJS_LIVE_SAVE_FAILED',
+          message: `the edit is in the browser but writing ${file ?? 'the workbook'} back failed: ${messageOf(error)}`,
+        }
+      }
+    }
+    if (interrupted()) return interruption()
+
+    return file === undefined
+      ? { jobId: job.jobId, ok: true, value: outcome.value }
+      : { jobId: job.jobId, ok: true, value: outcome.value, file }
+  } catch (error) {
+    if (interrupted()) return interruption()
+    return { jobId: job.jobId, ok: false, code: 'SJS_SCRIPT_ERROR', message: messageOf(error) }
+  } finally {
+    provider.releaseDriverLease(lease)
+  }
 }
 
 /**
@@ -196,7 +251,11 @@ export function startLiveChannel(
         catch { return false }
       })
       const targets = offered.map((provider) => provider.id)
-      if (targets.length === 0) {
+      const editorSessions = providers().flatMap(provider => {
+        const session = provider.openWorkbook === undefined ? undefined : provider.getSessionId?.()
+        return session === undefined ? [] : [session]
+      })
+      if (targets.length === 0 && editorSessions.length === 0) {
         await sleep(IDLE_DELAY_MS, controller.signal)
         continue
       }
@@ -211,7 +270,7 @@ export function startLiveChannel(
 
       let job: LiveJob | null = null
       try {
-        const response = await rpc.call(LIVE_CHANNEL, LIVE_POLL, { tabId: id, targets, workbooks }, controller.signal)
+        const response = await rpc.call(LIVE_CHANNEL, LIVE_POLL, { tabId: id, targets, workbooks, editorSessions }, controller.signal)
         if (!response.ok) {
           await sleep(RETRY_DELAY_MS, controller.signal)
           continue

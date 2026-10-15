@@ -15,17 +15,22 @@ Node.js 22.19 or later is required. DSH 0.2.0-rc.2 or later is required for the 
 | Tool | Behavior |
 | --- | --- |
 | sjs_live_status | Report transport readiness and the open editor workbooks. |
+| sjs_live_open | Open a workspace file and wait for the editor's Workbook; use create:true to create an .xlsx from the bundled blank template. |
 | sjs_live_execute | Run an async JavaScript body against the editor's Workbook. |
 
 Execution accepts exactly one of code or codeFile (a file inside the session workspace), an optional target, and save (default false). It provides spread/workbook, GC, sheet(name?), snapshot(), and console. Return a compact JSON-serializable value. Code runs in the editor page and shares its globals.
 
 Example code: const s = sheet(); s.setValue(0, 0, 'Total'); return snapshot()
 
+For a new chat without an open workbook, call `sjs_live_open({ path: "test-output/report.xlsx", create: true })`, then execute against the loaded workbook. The plugin ships its own `templates/empty.xlsx` with one blank Sheet1 spanning 200 rows and 20 columns; users do not need to prepare a template or destination directories. Missing directories are created inside the calling session workspace, and an existing destination is never overwritten. Omit `create` and `template` to open an existing file. An optional `template` path inside the workspace creates a file of the same extension, including other supported formats; `create:false` cannot be combined with `template`. The bundled default supports `.xlsx` only. The calling chat must be visible in the web UI. Copying and opening are separate steps: if opening fails, a successfully copied file remains on disk.
+
 Changes remain in the editor until saved. Pass save: true only when the user requested writing the file; save errors are returned even if the preceding edit succeeded. Direct API calls are not guaranteed to enter SpreadJS's undo history.
+
+During execution the editor grants an exclusive lease, blocks mouse and keyboard editing, and disables conflicting save/new/export actions. Closing or switching the editor interrupts the job with `SJS_LIVE_INTERRUPTED`; before destroying the Workbook, the editor keeps a recovery snapshot in its existing page-local cache. Reopen the file to recover it and inspect partial changes before continuing. This does not resume JavaScript or preserve the cache across a page refresh; snapshot failures are logged by the editor.
 
 ## Migration
 
-The server worker, CDP/hidden-browser runtime, SpreadJS runtime dependencies, and seven file tools (sjs_new, sjs_status, sjs_execute, sjs_import, sjs_export, sjs_screenshot, sjs_worktree) have been removed. browserPath and live configuration options are unsupported. There is no fallback to a server engine when the editor is absent. Import, export and new-workbook actions remain editor features.
+The server worker, CDP/hidden-browser runtime, SpreadJS runtime dependencies, and seven file tools (sjs_new, sjs_status, sjs_execute, sjs_import, sjs_export, sjs_screenshot, sjs_worktree) have been removed. browserPath and live configuration options are unsupported. There is no fallback to a server engine when the editor is absent. New files can be copied from templates through sjs_live_open; all Workbook initialization, import and export remain editor features.
 
 The driver registers its tools and bundled skill only while explicitly selected in the editor. An unavailable/loading Workbook is not offered as a runnable target. A previously advertised target can remain visible briefly until the channel's heartbeat expires; execution checks the reference again.
 

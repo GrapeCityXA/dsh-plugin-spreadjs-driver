@@ -49,6 +49,8 @@ export interface LiveOfferedWorkbook {
 
 /** A browser tab offering to run jobs. */
 export interface LivePollRequest {
+  /** Sessions this tab can open in its editor, even with no workbook loaded. */
+  readonly editorSessions?: readonly string[]
   /**
    * Per-tab identity minted by the client and kept in `sessionStorage`, so it
    * survives a reload and differs between tabs. DSH exposes no client identity
@@ -84,6 +86,8 @@ function isOfferedWorkbook(value: unknown): value is LiveOfferedWorkbook {
 
 /** One unit of work, handed to a tab that can run it. */
 export interface LiveJob {
+  /** An owner-side navigation request; no script runs for this job. */
+  readonly open?: { readonly sessionId: string; readonly address: string; readonly timeoutMs: number }
   readonly jobId: string
   /** JavaScript body, executed with the same injected names as `sjs_execute`. */
   readonly code: string
@@ -119,10 +123,12 @@ export type LiveJobResult =
 /** True when `value` is a well-formed poll request. */
 export function isLivePollRequest(value: unknown): value is LivePollRequest {
   if (typeof value !== 'object' || value === null) return false
-  const candidate = value as { tabId?: unknown; targets?: unknown; workbooks?: unknown }
+  const candidate = value as { tabId?: unknown; targets?: unknown; workbooks?: unknown; editorSessions?: unknown }
   if (typeof candidate.tabId !== 'string' || candidate.tabId === '') return false
   if (!Array.isArray(candidate.targets)) return false
   if (!candidate.targets.every((target) => typeof target === 'string')) return false
+  if (candidate.editorSessions !== undefined && (!Array.isArray(candidate.editorSessions)
+    || !candidate.editorSessions.every((id) => typeof id === 'string' && id !== ''))) return false
   // Optional, but strict when present: a malformed description would make status
   // report something the tab never meant.
   if (candidate.workbooks === undefined) return true
