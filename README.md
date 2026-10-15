@@ -23,13 +23,13 @@ dsh plugin --profile web add @grapecity-software/dsh-spreadjs-editor
 dsh plugin --profile web add @grapecity-software/dsh-spreadjs-driver
 ```
 
-将本 driver 和兼容 editor 安装到同一个 DSH web profile。使用配套 `@grapecity-software/dsh-spreadjs-editor` 时，在“设置 → 电子表格编辑器”中选择本 driver，打开工作簿并等待加载完成。SpreadJS 授权及使用 Designer 时所需的授权在 editor 中配置，按实际 Web UI 部署域名使用。需要 Node.js ≥22.19，需要 DSH ≥0.2.0-rc.2 以使用配套 editor 的桥接选择器。服务端无需安装 Chrome/Edge；纯命令行模式无法操作工作簿。
+将本 driver 和兼容 editor 安装到同一个 DSH web profile。使用配套 `@grapecity-software/dsh-spreadjs-editor` 时，在“设置 → 电子表格编辑器”中选择本 driver，打开工作簿并等待加载完成。SpreadJS 授权及使用 Designer 时所需的授权在 editor 中配置，按实际 Web UI 部署域名使用。需要 Node.js ≥22.19，支持 DSH `0.2.0-rc.2`，开发依赖与宿主 peer 声明统一锁定此 RC；旧版和 alpha 不在支持范围内。新的 RC 需验证后再更新声明。服务端无需安装 Chrome/Edge；纯命令行模式无法操作工作簿。
 
 ### 其他 editor 与依赖
 
 配套 editor 是契约的一种实现，不是本 driver 的包依赖。其他 SpreadJS editor 可以发布 `spreadjsBridgeRegistry`，遵循用户明确选择 driver 的规则，并提供自己的 Workbook provider。将本 driver 的 `editorSettingsNamespace` 配置成该 editor 的 DSH 设置命名空间（默认 `spreadjs-editor`），工具与 skill 即跟随其中的 `bridge` 字段启停。Loader 配置示例、必需的实例身份/独占锁/保存能力，以及可选的导航能力见[接入契约](docs/bridge-contract.md)。仅使用 SpreadJS 不能自动适配，具体 API 还取决于 editor 的 SpreadJS 版本和已加载模块。一个 profile 由一个 editor 或协调器拥有 registry。
 
-Driver 沿用 editor 的 SpreadJS 版本、模块和语言设置；配套 Editor 已加载中文语言资源。
+Driver 沿用 editor 的 SpreadJS 版本、模块和语言设置；配套 Editor 内置中文版 SpreadJS / Designer `19.2.1`，全套扩展同版本。Driver 不单独安装或锁定 SpreadJS。随包 API 参考仍为 V19.0，新增 API 应以 editor 实际加载的版本文档为准。
 
 本包没有运行时 `dependencies`，不包含 SpreadJS/Designer 引擎，也不把任何 editor 包列为 peer dependency。DSH peers 提供 Cordis、schema、tools、LLM 错误类型和 skills；开发依赖用于这些 API 的编译、构建与安装包测试。已清理旧 attachment 依赖及直接 session 依赖，聊天上下文由 DSH tools 服务提供。SpreadJS 授权及 Designer 依赖由 editor 管理。
 
@@ -100,13 +100,13 @@ dsh plugin --profile web add @grapecity-software/dsh-spreadjs-driver
 
 Install this driver and a compatible editor into a DSH web profile. With `@grapecity-software/dsh-spreadjs-editor`, open Settings → Spreadsheet Editor and select this driver, then open a workbook and wait for loading to finish. Configure SpreadJS licensing and, if used, Designer licensing in the editor for the domain serving the web UI.
 
-Node.js 22.19 or later is required. DSH 0.2.0-rc.2 or later is required for the editor bridge picker. No browser installation on the DSH server is required. A CLI-only profile cannot edit spreadsheets through this driver.
+Node.js 22.19 or later is required. DSH `0.2.0-rc.2` is the supported baseline, with development dependencies and host peers pinned to this RC. Older releases and alpha builds are outside the supported baseline; a newer RC requires verification before updating the declarations. No browser installation on the DSH server is required. A CLI-only profile cannot edit spreadsheets through this driver.
 
 ### Other editors and dependencies
 
 The companion editor is one implementation of the contract, not a package dependency. A third-party SpreadJS editor can publish `spreadjsBridgeRegistry`, honor explicit driver selection, and supply its own Workbook provider. Configure this driver's `editorSettingsNamespace` to that editor's DSH settings namespace (default `spreadjs-editor`); tools and skill follow its `bridge` field. See the contract for the Loader example, required identity/lease/save capabilities and optional navigation. Sharing the SpreadJS engine alone does not make an editor compatible, and supported APIs depend on the owner's SpreadJS version and loaded modules. One editor or coordinator owns the registry in a profile.
 
-The Driver follows its owner's SpreadJS version, modules and language settings. The companion Editor loads Chinese language resources.
+The Driver follows its owner's SpreadJS version, modules and language settings. The companion Editor bundles the Chinese SpreadJS / Designer `19.2.1` with matching extensions. The Driver does not install or pin its own SpreadJS engine. Its bundled API reference remains V19.0; consult the owner's versioned documentation for newer APIs.
 
 This package has no runtime `dependencies`, no SpreadJS/Designer runtime and no peer dependency on an editor package. DSH peers provide Cordis, schema, tools, LLM errors and skills. Development dependencies supply those APIs and build/pack tests; the old attachment dependency and direct session dependency have been removed. The session context is supplied by DSH's tools service. Spreadsheet licensing and any Designer dependency remain the editor's responsibility.
 
