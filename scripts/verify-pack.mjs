@@ -59,6 +59,7 @@ const required = [
   'templates/empty.xlsx',
   'skills/spreadjs/SKILL.md',
   'docs/architecture.md',
+  'docs/bridge-contract.md',
 ]
 const forbidden = [...shipped].filter(path => path.startsWith('artifacts/') || path.includes('sjs-worker'))
 if (forbidden.length > 0) throw new Error('obsolete engine artifacts in tarball: ' + forbidden.join(', '))

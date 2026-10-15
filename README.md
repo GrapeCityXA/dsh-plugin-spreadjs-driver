@@ -2,13 +2,19 @@
 
 English · [简体中文](README.zh-CN.md)
 
-Inspect and edit the Workbook open in the DSH SpreadJS editor. The editor creates and licenses SpreadJS in the user's browser; this driver uses the exact instance supplied by the editor. The host dispatches code and returns JSON results. It never starts a browser or creates a second Workbook.
+Inspect and edit live SpreadJS Workbooks supplied by compatible DSH web editors through the [bridge contract](docs/bridge-contract.md). The editor owns the browser instance, licensing, UI, loading, saving and recovery. This driver supplies AI tools, session routing and execution against that reference. The host dispatches code and returns JSON results; it never starts a browser or creates a second Workbook.
 
 ## Setup
 
-Install both the SpreadJS editor and driver into a DSH web profile. Open Settings → Spreadsheet Editor and select this driver, then open a workbook in the sidebar and wait for loading to finish. Configure the SpreadJS and Designer licenses in the editor for the domain serving the web UI.
+Install this driver and a compatible editor into a DSH web profile. With `@grapecity-software/dsh-spreadjs-editor`, open Settings → Spreadsheet Editor and select this driver, then open a workbook and wait for loading to finish. Configure SpreadJS licensing and, if used, Designer licensing in the editor for the domain serving the web UI.
 
 Node.js 22.19 or later is required. DSH 0.2.0-rc.2 or later is required for the editor bridge picker. No browser installation on the DSH server is required. A CLI-only profile cannot edit spreadsheets through this driver.
+
+## Other editors and dependencies
+
+The companion editor is one implementation of the contract, not a package dependency. A third-party SpreadJS editor can publish `spreadjsBridgeRegistry`, honor explicit driver selection, and supply its own Workbook provider. Configure this driver's `editorSettingsNamespace` to that editor's DSH settings namespace (default `spreadjs-editor`); tools and skill follow its `bridge` field. See the contract for the Loader example, required identity/lease/save capabilities and optional navigation. Sharing the SpreadJS engine alone does not make an editor compatible, and supported APIs depend on the owner's SpreadJS version and loaded modules. One editor or coordinator owns the registry in a profile.
+
+This package has no runtime `dependencies`, no SpreadJS/Designer runtime and no peer dependency on an editor package. DSH peers provide Cordis, schema, tools, LLM errors and skills. Development dependencies supply those APIs and build/pack tests; the old attachment dependency and direct session dependency have been removed. The session context is supplied by DSH's tools service. Spreadsheet licensing and any Designer dependency remain the editor's responsibility.
 
 ## Tools
 
@@ -20,7 +26,7 @@ Node.js 22.19 or later is required. DSH 0.2.0-rc.2 or later is required for the 
 
 Execution accepts exactly one of code or codeFile (a file inside the session workspace), an optional target, and save (default false). It provides spread/workbook, GC, sheet(name?), snapshot(), console, and signal (AbortSignal). Return a compact JSON-serializable value. Code runs in the editor page and shares its globals.
 
-Status and execution are confined to the calling chat. Use the opaque `id` returned by status as `target`; do not construct it or reuse it after a reload/reopen. Several available workbooks require an explicit target, including the same file open in several browser tabs. Jobs bind to a browser, provider, chat, file and load instance, and reject a replacement instance. Both plugins need the updated identity protocol; an older editor is not an executable target.
+Status and execution are confined to the calling chat. Use the opaque `id` returned by status as `target`; do not construct it or reuse it after a reload/reopen. Several available workbooks require an explicit target, including the same file open in several browser tabs. Jobs bind to a browser, provider, chat, file and load instance, and reject a replacement instance. Editors must provide the current identity/lease protocol; an older provider without these capabilities is not an executable target.
 
 Example code: const s = sheet(); s.setValue(0, 0, 'Total'); return snapshot()
 
@@ -28,7 +34,7 @@ For a new chat without an open workbook, call `sjs_live_open({ path: "test-outpu
 
 Changes remain in the editor until saved. Pass save: true only when the user requested writing the file; save errors are returned even if the preceding edit succeeded. Direct API calls are not guaranteed to enter SpreadJS's undo history.
 
-During execution the editor grants an exclusive lease, blocks mouse and keyboard editing, and disables conflicting save/new/export actions. Closing or switching the editor interrupts the job with `SJS_LIVE_INTERRUPTED`; before destroying the Workbook, the editor keeps a recovery snapshot in its existing page-local cache. Reopen the file to recover it and inspect partial changes before continuing. This does not resume JavaScript or preserve the cache across a page refresh; snapshot failures are logged by the editor.
+During execution the editor grants an exclusive lease, blocks concurrent editing, and disables conflicting save/new/export actions. Closing or switching the editor interrupts the job with `SJS_LIVE_INTERRUPTED`. The companion Editor snapshots before destruction into a page-local cache; reopen and inspect partial changes before continuing. That cache does not resume JavaScript or survive a page refresh; snapshot failures are logged. Other editors own their recovery policy as described in the contract.
 
 ## Migration
 

@@ -16,5 +16,5 @@ export const name = 'dsh-spreadjs-driver'
 export function apply(ctx: Context, config: SpreadjsConfig = {}): void {
   const resolved = resolveConfig(config)
   if (resolved.tools) ctx.plugin(live, resolved)
-  if (resolved.tools && resolved.skills) ctx.plugin(skills)
+  if (resolved.tools && resolved.skills) ctx.plugin(skills, resolved)
 }

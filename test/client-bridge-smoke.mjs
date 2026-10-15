@@ -239,7 +239,8 @@ async function run() {
   let leasesAcquired = 0
   let leasesReleased = 0
   const provider = {
-    id: 'spreadjs-designer',
+    // A compatible editor chooses its own provider id; no companion-editor constant.
+    id: 'acme-live-workbook',
     getWorkbook: () => workbookReady ? currentWorkbook : undefined,
     getNamespace: () => ({ Spread: { Sheets: {} } }),
     getActivePath: () => activePath,

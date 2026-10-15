@@ -19,8 +19,8 @@
  *
  *  - The dependency runs provider → editor. That is the honest description of the
  *    relationship — a bridge is a consumer of the editor's workbooks — and it is
- *    still optional: nothing here fires when the editor is absent, and every
- *    other part of this plugin works exactly as before.
+ *    a service contract, not an npm dependency on a particular editor package.
+ *    Without a compatible owner, this plugin has no Workbook to execute against.
  *  - The roster is a list of CANDIDATES, not a broadcast. Exactly one entry is
  *    handed the live document, the one the user selected. The editor remains the
  *    gatekeeper.
@@ -54,7 +54,7 @@ export interface ClientContextLike {
  * workbook — only a way to *offer* one.
  */
 export interface SpreadjsWorkbookProvider {
-  /** Stable identity, used to address one attached workbook among several. */
+  /** Stable provider identity, unique among attached providers in the page. */
   readonly id: string
   /** The live workbook, or undefined when nothing is open. */
   getWorkbook(): unknown | undefined
@@ -64,7 +64,7 @@ export interface SpreadjsWorkbookProvider {
    * Without it, code that needs an enum cannot run.
    */
   getNamespace?(): unknown
-  /** Absolute path of the open file, when there is one. */
+  /** Full session file resource address of the open document. */
   getActivePath?(): string | undefined
   getWorkbookIdentity?(): { sessionId: string; file: string; instanceId: string } | undefined
   getSessionId?(): string | undefined
@@ -110,8 +110,7 @@ export interface SpreadjsBridgeRegistry {
 export const BRIDGE_REGISTRY_SERVICE = 'spreadjsBridgeRegistry'
 
 /**
- * The id this plugin registers under, and the editor's settings namespace it is
- * chosen in — both defined once in `shared/bridge.ts`, because the host half
- * reads the same two names to decide whether it should be present at all.
+ * The unique id this plugin registers under. The host reads this value from
+ * the compatible owner's configured settings namespace before enabling tools.
  */
 export { BRIDGE_ID } from '../shared/bridge.ts'

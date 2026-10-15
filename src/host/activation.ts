@@ -56,7 +56,7 @@ interface SettingsLike {
   describe(options?: { redactSecrets?: boolean }): Array<{ ns: string; value: unknown }>
 }
 
-export function readChosenBridge(ctx: Context): string | undefined {
+export function readChosenBridge(ctx: Context, namespace = EDITOR_SETTINGS_NAMESPACE): string | undefined {
   try {
     const settings = (ctx as unknown as { get(name: string): unknown }).get('settings') as
       | SettingsLike
@@ -64,7 +64,7 @@ export function readChosenBridge(ctx: Context): string | undefined {
     if (settings === undefined || typeof settings.describe !== 'function') return undefined
     const entry = settings
       .describe()
-      .find((descriptor) => descriptor.ns === EDITOR_SETTINGS_NAMESPACE)
+      .find((descriptor) => descriptor.ns === namespace)
     if (entry === undefined) return undefined
     const section = entry.value
     if (typeof section !== 'object' || section === null) return undefined
@@ -75,16 +75,16 @@ export function readChosenBridge(ctx: Context): string | undefined {
   }
 }
 
-export function keepPresent(ctx: Context, row: string, activate: () => () => void): void {
+export function keepPresent(ctx: Context, row: string, activate: () => () => void, namespace = EDITOR_SETTINGS_NAMESPACE): void {
   const activation = createActivation({
     id: BRIDGE_ID,
-    source: { chosen: () => readChosenBridge(ctx) },
+    source: { chosen: () => readChosenBridge(ctx, namespace) },
     activate,
   })
 
   ctx.effect(() => {
     const onDocument = ctx.on('settings/document-updated', (ns: string) => {
-      if (ns === EDITOR_SETTINGS_NAMESPACE) activation.sync()
+      if (ns === namespace) activation.sync()
     })
     activation.sync()
     return () => {

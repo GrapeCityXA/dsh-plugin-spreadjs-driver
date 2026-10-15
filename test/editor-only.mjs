@@ -4,6 +4,8 @@ import { readFile, readdir } from 'node:fs/promises'
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const host = await readFile(new URL('../src/host/index.ts', import.meta.url), 'utf8')
 if (Object.keys(pkg.dependencies ?? {}).length !== 0) throw new Error('runtime dependencies must be empty')
+assert(!Object.keys(pkg.peerDependencies ?? {}).some(name => name.startsWith('@grapecity-software/')),
+  'driver must not require an editor package or its spreadsheet engine as a peer')
 if (/SjsProvider|SjsEngine|toolsPlugin/.test(host)) throw new Error('server engine reference remains')
 if (pkg.exports?.['./client']?.default !== './lib/client.js') throw new Error('client export missing')
 for (const dir of ['../src/workers', '../src/host/provider', '../src/host/adapters']) {

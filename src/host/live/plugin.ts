@@ -67,5 +67,5 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
       dropStatus()
       dropOpen()
     }
-  })
+  }, config.editorSettingsNamespace)
 }

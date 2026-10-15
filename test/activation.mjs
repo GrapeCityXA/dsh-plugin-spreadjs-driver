@@ -1,10 +1,10 @@
 // Exercise actual plugin activation with mutable settings and late service arrival.
 import assert from 'node:assert/strict'
-import { livePlugin, skillsPlugin, resolveConfig } from '../lib/index.js'
+import { apply as applyDriver, livePlugin, skillsPlugin, resolveConfig } from '../lib/index.js'
 const OURS = '@grapecity-software/dsh-spreadjs-driver'
 const OTHER = '@acme/dsh-spreadjs-bridge'
 const NAMESPACE = 'spreadjs-editor'
-function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
+function fakeHost({ bridge, withSettings = true, foreignOnly = false, namespace = NAMESPACE } = {}) {
   const tools = new Map()
   const listeners = new Map()
   const pending = []
@@ -20,7 +20,7 @@ function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
     describe: () =>
       foreignOnly
         ? [{ ns: 'some-other-plugin', value: { bridge: chosen ?? '' } }]
-        : [{ ns: NAMESPACE, value: { bridge: chosen ?? '' } }],
+        : [{ ns: namespace, value: { bridge: chosen ?? '' } }],
   }
   const services = {
     tools: {
@@ -98,7 +98,7 @@ function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
     /** Rewrite the chosen bridge, then announce it the way dsh-settings does. */
     choose(next) {
       chosen = next
-      announce(NAMESPACE)
+      announce(namespace)
     },
     /** Announce a change to some OTHER plugin's namespace. */
     announceForeign() {
@@ -116,8 +116,8 @@ function fakeHost({ bridge, withSettings = true, foreignOnly = false } = {}) {
 
 const registered = host => [...host.tools.keys()].sort()
 const LIVE_TOOLS = ['sjs_live_execute', 'sjs_live_open', 'sjs_live_status']
-function mount(host) {
-  const config = resolveConfig({})
+function mount(host, options = {}) {
+  const config = resolveConfig(options)
   livePlugin.apply(host.ctx, config)
   skillsPlugin.apply(host.ctx, config)
 }
@@ -149,4 +149,26 @@ for (const bridge of [OURS, OTHER]) {
   const host = fakeHost({ withSettings: false }); mount(host); expectActive(host, false)
   host.lateSettings(bridge); expectActive(host, bridge === OURS)
 }
-console.log('activation: selection, missing editor/settings, switching, idempotence and late settings passed')
+{
+  const host = fakeHost({ bridge: OURS, namespace: 'acme-sheet-editor' })
+  mount(host, { editorSettingsNamespace: 'acme-sheet-editor' })
+  expectActive(host, true)
+  host.choose(OTHER); expectActive(host, false)
+  host.choose(OURS); expectActive(host, true)
+  host.announceForeign(); expectActive(host, true)
+}
+{
+  const host = fakeHost({ bridge: OURS, namespace: 'acme-sheet-editor' })
+  mount(host); expectActive(host, false)
+}
+{
+  const host = fakeHost({ bridge: OURS, namespace: 'acme-sheet-editor' })
+  host.ctx.plugin = (plugin, options) => plugin.apply(host.ctx, options)
+  applyDriver(host.ctx, { editorSettingsNamespace: 'acme-sheet-editor' })
+  expectActive(host, true)
+  host.choose(OTHER); expectActive(host, false)
+}
+for (const namespace of ['', 'Invalid Namespace', '../editor', 1]) {
+  assert.throws(() => resolveConfig({ editorSettingsNamespace: namespace }), /valid DSH settings namespace/)
+}
+console.log('activation: selection, third-party editor namespaces, switching, idempotence and late settings passed')
