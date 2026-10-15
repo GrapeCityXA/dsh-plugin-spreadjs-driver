@@ -35,11 +35,14 @@ import {
   LIVE_CHANNEL,
   LIVE_POLL,
   LIVE_RESULT,
+  LIVE_CHECK,
   isLiveJobResult,
   isLivePollRequest,
   type LiveJob,
   type LiveJobResult,
   type LiveOfferedWorkbook,
+  type LivePollRequest,
+  type LiveWorkbookBinding,
 } from '../../shared/live.ts'
 
 /**
@@ -76,6 +79,7 @@ export interface LiveTransportHost {
 }
 
 interface TrackedTab {
+  readonly tabId: string
   readonly editorSessions: readonly string[]
   readonly targets: readonly string[]
   /** What the tab said each offered workbook is holding; may be empty. */
@@ -85,16 +89,25 @@ interface TrackedTab {
 
 interface PendingJob {
   settle(result: LiveJobResult): void
+  reject(error: unknown): void
+  tabId?: string
+  readonly job: LiveJob
   readonly timer: ReturnType<typeof setTimeout>
 }
 
 /** A job can go to a tab only when that tab holds what the job asks for. */
-function serves(targets: readonly string[], job: LiveJob, editorSessions: readonly string[]): boolean {
-  if (job.open !== undefined) return editorSessions.includes(job.open.sessionId)
-  if (job.target !== undefined) return targets.includes(job.target)
+function serves(poll: LivePollRequest, job: LiveJob): boolean {
+  if (job.open !== undefined) return (poll.editorSessions ?? []).includes(job.open.sessionId)
+  if (job.binding !== undefined) {
+    const binding = job.binding
+    return poll.tabId === binding.tabId && poll.targets.includes(binding.providerId)
+      && (poll.workbooks ?? []).some(workbook => workbook.id === binding.providerId
+        && workbook.sessionId === binding.sessionId && workbook.file === binding.file && workbook.instanceId === binding.instanceId)
+  }
+  if (job.target !== undefined) return poll.targets.includes(job.target)
   // Untargeted work goes to any tab with a workbook: the caller asked for
   // "whatever is open", and a tab with nothing open has nothing to run it on.
-  return targets.length > 0
+  return poll.targets.length > 0
 }
 
 function failure(code: string, message: string): RpcOutcome {
@@ -125,8 +138,10 @@ function deferred<T>(): Deferred<T> {
 
 /** Options for one live execution. */
 export interface LiveExecuteOptions {
+  /** Model-facing executions must be confined to their calling chat. */
+  readonly sessionId?: string
   readonly open?: LiveJob['open']
-  /** Attached workbook id to run against; omit to accept whichever tab answers. */
+  /** Opaque status target; required when the calling chat has several workbooks. */
   readonly target?: string
   /** Write the workbook back to its file after the code runs. */
   readonly save?: boolean
@@ -207,7 +222,7 @@ export class LiveChannel {
         throw new SjsError('the web server returned no way to unregister the route', 'SJS_LIVE_NO_TRANSPORT')
       }
       this.transport = { ok: true }
-      return unregister
+      return () => { try { unregister() } finally { this.dispose() } }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       this.transport = { ok: false, reason }
@@ -234,13 +249,20 @@ export class LiveChannel {
    * a job, so status must not pretend it is not there. That entry simply carries
    * no file.
    */
-  offered(): readonly LiveOfferedWorkbook[] {
+  offered(sessionId?: string): readonly LiveOfferedWorkbook[] {
     const merged = new Map<string, LiveOfferedWorkbook>()
     for (const tab of this.liveTabs()) {
-      for (const workbook of tab.workbooks) merged.set(workbook.id, workbook)
+      for (const workbook of tab.workbooks) {
+        if (!tab.targets.includes(workbook.id)) continue
+        if (sessionId !== undefined && workbook.sessionId !== sessionId) continue
+        if (workbook.sessionId !== undefined && workbook.instanceId !== undefined && workbook.file !== undefined) {
+          const id = JSON.stringify([tab.tabId, workbook.id, workbook.instanceId])
+          merged.set(id, { ...workbook, id, providerId: workbook.id, tabId: tab.tabId })
+        } else if (sessionId === undefined) merged.set(workbook.id, workbook)
+      }
     }
-    for (const id of this.attached()) {
-      if (!merged.has(id)) merged.set(id, { id })
+    for (const id of sessionId === undefined ? this.attached() : []) {
+      if (![...merged.values()].some(workbook => workbook.id === id || workbook.providerId === id)) merged.set(id, { id })
     }
     return [...merged.values()]
   }
@@ -248,6 +270,10 @@ export class LiveChannel {
   /** True when a tab has polled recently enough to be considered present. */
   get connected(): boolean {
     return this.liveTabs().length > 0
+  }
+
+  hasSession(sessionId: string): boolean {
+    return this.liveTabs().some(tab => tab.editorSessions.includes(sessionId)) || this.offered(sessionId).length > 0
   }
 
   /**
@@ -276,9 +302,19 @@ export class LiveChannel {
     if (!this.transport.ok && options.open !== undefined) {
       throw new SjsError(`The live channel is unavailable: ${this.transport.reason}`, 'SJS_LIVE_NO_TRANSPORT')
     }
-    if (options.open === undefined) this.assertServable(target)
+    if (options.open === undefined) this.assertServable(target, options.sessionId)
     else if (!this.liveTabs().some(tab => tab.editorSessions.includes(options.open!.sessionId))) {
       throw new SjsError('Open the calling chat in the DSH web UI with the SpreadJS editor installed and this Driver selected.', 'SJS_LIVE_NO_EDITOR')
+    }
+
+    let binding: LiveWorkbookBinding | undefined
+    if (options.open === undefined && options.sessionId !== undefined) {
+      // An explicit target is the opaque id returned by status, not a provider name.
+      const candidates = this.offered(options.sessionId).filter(workbook => target === undefined || workbook.id === target)
+      if (candidates.length === 0) throw new SjsError('No matching loaded workbook in the calling chat. Use sjs_live_open or refresh sjs_live_status.', 'SJS_LIVE_UNKNOWN_TARGET')
+      if (candidates.length !== 1) throw new SjsError('Several workbooks are available in this chat; choose a target from sjs_live_status.', 'SJS_LIVE_AMBIGUOUS_TARGET')
+      const workbook = candidates[0]!
+      binding = { tabId: workbook.tabId!, providerId: workbook.providerId!, sessionId: options.sessionId, file: workbook.file!, instanceId: workbook.instanceId! }
     }
 
     if (this.queue.length >= MAX_QUEUED_JOBS) {
@@ -291,6 +327,7 @@ export class LiveChannel {
     const job: LiveJob = {
       jobId: randomUUID(),
       code,
+      ...(binding === undefined ? {} : { binding }),
       ...(options.open === undefined ? {} : { open: options.open }),
       ...(target === undefined ? {} : { target }),
       ...(options.save === undefined ? {} : { save: options.save }),
@@ -310,7 +347,7 @@ export class LiveChannel {
       ))
     }, options.timeoutMs)
 
-    this.pending.set(job.jobId, { settle: settled.resolve, timer })
+    this.pending.set(job.jobId, { settle: settled.resolve, reject: settled.reject, timer, job })
     if (options.signal?.aborted === true) {
       abort()
     } else {
@@ -330,7 +367,11 @@ export class LiveChannel {
 
   /** Drop every queued and waiting job, and stop tracking tabs. */
   dispose(): void {
-    for (const jobId of [...this.pending.keys()]) this.forget(jobId)
+    this.transport = { ok: false, reason: 'the live channel was closed' }
+    for (const [jobId, pending] of this.pending) {
+      pending.reject(new SjsError('The live channel was closed.', 'SJS_LIVE_DISCONNECTED'))
+      this.forget(jobId)
+    }
     this.queue.length = 0
     this.tabs.clear()
   }
@@ -352,7 +393,7 @@ export class LiveChannel {
   }
 
   /** Fail before queueing when no tab could possibly take the job. */
-  private assertServable(target: string | undefined): void {
+  private assertServable(target: string | undefined, sessionId?: string): void {
     // Checked first: an unregistered channel makes every later symptom
     // ("nobody is polling") a consequence of this one, not a separate finding.
     if (!this.transport.ok) {
@@ -369,7 +410,17 @@ export class LiveChannel {
         'SJS_LIVE_NO_CLIENT',
       )
     }
-    if (target !== undefined && !live.some((tab) => tab.targets.includes(target))) {
+    if (sessionId !== undefined) {
+      const workbooks = this.offered(sessionId)
+      if (target !== undefined && !workbooks.some(workbook => workbook.id === target)) {
+        throw new SjsError('No matching workbook in the calling chat. Refresh sjs_live_status.', 'SJS_LIVE_UNKNOWN_TARGET')
+      }
+      if (workbooks.length === 0) {
+        throw new SjsError('The calling chat has no loaded workbook with a current identity. Use sjs_live_open and the latest editor.', 'SJS_LIVE_NO_WORKBOOK')
+      }
+      return
+    }
+    if (target !== undefined && !live.some((tab) => tab.targets.includes(target)) && !this.offered().some(workbook => workbook.id === target)) {
       const available = [...new Set(live.flatMap((tab) => [...tab.targets]))]
       throw new SjsError(
         `No open workbook with id ${JSON.stringify(target)}. `
@@ -385,6 +436,7 @@ export class LiveChannel {
   private dispatch(endpoint: string, payload: unknown): RpcOutcome {
     if (endpoint === LIVE_POLL) return this.onPoll(payload)
     if (endpoint === LIVE_RESULT) return this.onResult(payload)
+    if (endpoint === LIVE_CHECK) return this.onCheck(payload)
     return failure('SJS_LIVE_UNKNOWN_ENDPOINT', `unknown live endpoint ${JSON.stringify(endpoint)}`)
   }
 
@@ -393,15 +445,23 @@ export class LiveChannel {
       return failure('SJS_LIVE_BAD_REQUEST', 'a poll payload must be { tabId: string, targets: string[] }')
     }
     this.tabs.set(payload.tabId, {
+      tabId: payload.tabId,
       editorSessions: payload.editorSessions ?? [],
       targets: payload.targets,
       workbooks: payload.workbooks ?? [],
       seenAt: Date.now(),
     })
 
-    const index = this.queue.findIndex((job) => serves(payload.targets, job, payload.editorSessions ?? []))
+    for (const job of [...this.queue]) {
+      if (job.binding?.tabId === payload.tabId && !serves(payload, job)) {
+        this.pending.get(job.jobId)?.settle({ jobId: job.jobId, ok: false, code: 'SJS_LIVE_INTERRUPTED', message: 'The queued workbook was closed, reloaded or replaced.' })
+        this.forget(job.jobId)
+      }
+    }
+    const index = this.queue.findIndex((job) => serves(payload, job))
     if (index < 0) return { ok: true, value: null }
     const [job] = this.queue.splice(index, 1)
+    this.pending.get(job!.jobId)!.tabId = payload.tabId
     return { ok: true, value: job }
   }
 
@@ -414,10 +474,24 @@ export class LiveChannel {
     // the host may already have given up on a job it timed out. Either way the
     // work is over, and answering with a failure would only make noise.
     if (pending === undefined) return { ok: true, value: null }
+    if ((pending.job.binding !== undefined || pending.job.open !== undefined)
+      && (pending.tabId === undefined || pending.tabId !== payload.tabId)) return failure('SJS_LIVE_WRONG_OWNER', 'Only the claiming browser may settle this job.')
 
     clearTimeout(pending.timer)
     this.pending.delete(payload.jobId)
     pending.settle(payload)
     return { ok: true, value: null }
+  }
+
+  private onCheck(payload: unknown): RpcOutcome {
+    if (typeof payload !== 'object' || payload === null || !('jobId' in payload) || !('tabId' in payload)
+      || typeof payload.jobId !== 'string' || typeof payload.tabId !== 'string') return failure('SJS_LIVE_BAD_REQUEST', 'check requires jobId and tabId')
+    const pending = this.pending.get(payload.jobId)
+    const active = pending !== undefined && pending.tabId === payload.tabId
+    if (active) {
+      const tab = this.tabs.get(payload.tabId)
+      if (tab !== undefined) this.tabs.set(payload.tabId, { ...tab, seenAt: Date.now() })
+    }
+    return { ok: true, value: { active } }
   }
 }

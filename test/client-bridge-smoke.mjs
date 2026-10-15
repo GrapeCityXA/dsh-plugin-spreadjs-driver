@@ -134,12 +134,17 @@ function fakeConnection() {
   const jobs = []
   const results = []
   let polls = 0
+  let checks = 0
+  const cancelled = new Set()
   return {
     jobs,
     results,
     get polls() { return polls },
+    get checks() { return checks },
+    cancel(jobId) { cancelled.add(jobId) },
     rpc: {
       async call(channel, endpoint, payload) {
+        if (endpoint === 'check') { checks++; return { ok: true, value: { active: !cancelled.has(payload.jobId) } } }
         if (endpoint === 'poll') {
           polls += 1
           return { ok: true, value: jobs.shift() ?? null }
@@ -226,6 +231,7 @@ async function run() {
   let workbookReady = false
   let currentWorkbook = workbook
   let activePath = 'C:/work/book.ssjson'
+  let instanceId = 'original-instance'
   let saves = 0
   let saveShouldFail = false
   let heldLease
@@ -237,6 +243,7 @@ async function run() {
     getWorkbook: () => workbookReady ? currentWorkbook : undefined,
     getNamespace: () => ({ Spread: { Sheets: {} } }),
     getActivePath: () => activePath,
+    getWorkbookIdentity: () => ({ sessionId: 'chat', file: activePath, instanceId }),
     acquireDriverLease: () => {
       if (heldLease !== undefined) throw new Error('workbook busy')
       heldLease = `lease-${++leasesAcquired}`
@@ -433,6 +440,60 @@ async function run() {
       }
     })()
   }
+
+  await step('caller cancellation signals the script, keeps its lease until completion and prevents saving', async () => {
+    const before = connection.results.length
+    const savesBefore = saves
+    let finish
+    globalThis.__spreadjsCancelledWait = new Promise(resolve => { finish = resolve })
+    try {
+      connection.enqueue({ jobId: 'cancel-running', code: 'globalThis.__spreadjsCancellationSignal = signal; await globalThis.__spreadjsCancelledWait; return 1', save: true })
+      await until(() => globalThis.__spreadjsCancellationSignal !== undefined, 'script receiving its cancellation signal')
+      const checksBefore = connection.checks
+      connection.cancel('cancel-running')
+      await until(() => globalThis.__spreadjsCancellationSignal.aborted, 'host cancellation reaching the script')
+      assert(connection.checks > checksBefore, 'no cancellation heartbeat ran while script awaited')
+      assert(heldLease !== undefined && saves === savesBefore, 'cancel unlocked or saved a still-running script')
+      finish()
+      await until(() => connection.results.length > before, 'cancelled script finishing')
+      assert(connection.results.at(-1).code === 'SJS_LIVE_ABORTED', JSON.stringify(connection.results.at(-1)))
+      assert(saves === savesBefore && heldLease === undefined, 'cancelled work was saved or left locked')
+    } finally {
+      finish()
+      delete globalThis.__spreadjsCancelledWait
+      delete globalThis.__spreadjsCancellationSignal
+    }
+  })()
+
+  await step('cancellation after code completes is checked before save without waiting for a heartbeat', async () => {
+    const before = connection.results.length
+    const savesBefore = saves
+    globalThis.__spreadjsCancelBeforeSave = () => connection.cancel('cancel-before-save')
+    try {
+      connection.enqueue({ jobId: 'cancel-before-save', code: 'globalThis.__spreadjsCancelBeforeSave(); return 1', save: true })
+      await until(() => connection.results.length > before, 'save permission refusal')
+      assert(connection.results.at(-1).code === 'SJS_LIVE_ABORTED', JSON.stringify(connection.results.at(-1)))
+      assert(saves === savesBefore && heldLease === undefined, 'cancelled job saved or left a lease held')
+    } finally { delete globalThis.__spreadjsCancelBeforeSave }
+  })()
+
+  await step('a reloaded instance between claim and execution cannot run code or save', async () => {
+    const before = connection.results.length
+    const paintBefore = workbook.paint.length
+    const savesBefore = saves
+    const original = connection.rpc.call
+    connection.rpc.call = async (...args) => {
+      const response = await original(...args)
+      if (args[1] === 'check' && args[2].jobId === 'stale-claimed') instanceId = 'reloaded-instance'
+      return response
+    }
+    try {
+      connection.enqueue({ jobId: 'stale-claimed', binding: { tabId: 'ignored-in-client', providerId: provider.id, sessionId: 'chat', file: activePath, instanceId }, code: 'throw new Error("must not run")', save: true })
+      await until(() => connection.results.length > before, 'stale instance refusal')
+      assert(connection.results.at(-1).code === 'SJS_LIVE_INTERRUPTED', JSON.stringify(connection.results.at(-1)))
+      assert(workbook.paint.length === paintBefore && saves === savesBefore && heldLease === undefined, 'replacement instance was touched')
+    } finally { connection.rpc.call = original; instanceId = 'original-instance' }
+  })()
 
   await step('an unreachable host backs off instead of spinning', async () => {
     const broken = fakeConnection()

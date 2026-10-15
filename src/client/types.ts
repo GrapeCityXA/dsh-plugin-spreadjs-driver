@@ -66,10 +66,11 @@ export interface SpreadjsWorkbookProvider {
   getNamespace?(): unknown
   /** Absolute path of the open file, when there is one. */
   getActivePath?(): string | undefined
+  getWorkbookIdentity?(): { sessionId: string; file: string; instanceId: string } | undefined
   getSessionId?(): string | undefined
   openWorkbook?(address: string, timeoutMs: number): Promise<void>
   /** Ask the owner to persist the live workbook to its file. */
-  save?(lease?: string): Promise<void>
+  save?(lease?: string, options?: { signal?: AbortSignal; beforeWrite?: () => Promise<void> }): Promise<void>
   /** Acquire an exclusive edit lease from the workbook owner. */
   acquireDriverLease?(): string
   /** Release a lease acquired from the workbook owner. */

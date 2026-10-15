@@ -427,7 +427,7 @@ async function run() {
     assert(wrong.value === null, 'an opening job reached a different chat')
     const claim = await host.call('poll', { tabId: 'editor', targets: [], editorSessions: ['chat-a'] })
     assert(claim.value?.open?.address === open.address, 'empty editor did not receive the opening job')
-    await host.call('result', { jobId: claim.value.jobId, ok: true, value: { ready: true }, file: open.address })
+    await host.call('result', { tabId: 'editor', jobId: claim.value.jobId, ok: true, value: { ready: true }, file: open.address })
     assert((await execution).file === open.address, 'opening result was lost')
     await rejects(() => channel.execute('', { open: { ...open, sessionId: 'absent' }, timeoutMs: 100 }), 'SJS_LIVE_NO_EDITOR')
   })()

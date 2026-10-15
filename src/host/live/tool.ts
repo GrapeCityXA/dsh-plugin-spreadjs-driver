@@ -14,10 +14,10 @@ export function liveExecuteTool(ctx: Context, channel: LiveChannel, config: Reso
   return defineTool({
     name: 'sjs_live_execute',
     description:
-      'Edit the spreadsheet the user has open right now in the SpreadJS designer, in their browser. '
+      'Edit an editor-supplied spreadsheet in the calling chat, in the user browser. '
       + 'The editor must be open and this driver selected in Settings → Spreadsheet Editor. '
       + 'Code runs as an async function body with in scope: spread (the live Spread.Sheets.Workbook), '
-      + 'workbook (alias), GC, sheet(name?) returning a worksheet, snapshot(), and console. '
+      + 'workbook (alias), GC, sheet(name?) returning a worksheet, snapshot(), console, and signal (AbortSignal). '
       + 'There is no io helper or server-side spreadsheet engine. '
       + 'It may return a JSON-serializable value, which comes back to you. '
       + 'The edit stays in the browser: the user can see it, and their file is NOT '
@@ -27,13 +27,16 @@ export function liveExecuteTool(ctx: Context, channel: LiveChannel, config: Reso
     parameters: {
       code: { type: 'string', description: 'SpreadJS JavaScript snippet. Mutually exclusive with codeFile.' },
       codeFile: { type: 'string', description: 'Workspace-relative or absolute JavaScript body file to execute. Preferred for multi-line code; mutually exclusive with code.' },
-      target: { type: 'string', description: 'Which open workbook to edit, when more than one designer tab is connected. Omit to use whichever is connected.' },
+      target: { type: 'string', description: 'Opaque id from sjs_live_status in this chat. Required when several workbooks are available; refresh status after reopening or reloading.' },
       save: { type: 'boolean', description: 'Write the edit back to the file on disk. Defaults to false, leaving the change only in the designer. Set true ONLY when the user asked to save or overwrite the file.' },
     },
     output: operationOutput,
     async execute(args, exec) {
+      const sessionId = exec.agent?.session.header.id
+      if (!sessionId) throw new SjsError('Execution requires a calling session.', 'SESSION_SCOPE_UNAVAILABLE')
       const code = await resolveCode(exec, args.code, args.codeFile)
       const execution = await channel.execute(code, {
+        sessionId,
         ...(args.target === undefined ? {} : { target: args.target }),
         ...(args.save === undefined ? {} : { save: args.save }),
         timeoutMs: config.operationTimeoutMs,

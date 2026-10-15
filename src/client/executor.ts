@@ -7,7 +7,7 @@ export type LiveResult =
   | { readonly ok: false; readonly code: string; readonly message: string }
 
 /** Names injected into user code, available to browser-side code. */
-const INJECTED = ['spread', 'workbook', 'GC', 'sheet', 'snapshot', 'console'] as const
+const INJECTED = ['spread', 'workbook', 'GC', 'sheet', 'snapshot', 'console', 'signal'] as const
 
 /** Cap the serialized result before sending it through the channel. */
 const MAX_RESULT_CHARS = 200_000
@@ -160,6 +160,7 @@ function serializeSafe(value: unknown): unknown {
 export async function runAgainstProvider(
   provider: SpreadjsWorkbookProvider,
   code: string,
+  signal?: AbortSignal,
 ): Promise<LiveResult> {
   const workbook = provider.getWorkbook() as WorkbookLike | undefined
   if (workbook === undefined || workbook === null) {
@@ -184,6 +185,7 @@ export async function runAgainstProvider(
 
   workbook.suspendPaint?.()
   try {
+    signal?.throwIfAborted()
     const value = await fn(
       workbook,
       workbook,
@@ -191,6 +193,7 @@ export async function runAgainstProvider(
       (name?: string) => resolveSheet(workbook, name),
       () => summarize(workbook),
       console,
+      signal,
     )
     if (value === undefined) return { ok: true, value: summarize(workbook) }
     return { ok: true, value: serializeSafe(value) }

@@ -50,7 +50,9 @@ try {
     assert(job?.open, 'no editor open job was queued')
     assert.equal(job.open.sessionId, 'chat')
     assert.equal(job.code, '')
-    await call('result', { jobId: job.jobId, ok: true, value: { ready: true }, file: job.open.address })
+    const wrongOwner = await call('result', { tabId: 'another-browser', jobId: job.jobId, ok: true, value: { ready: true } })
+    assert.equal(wrongOwner.error.code, 'SJS_LIVE_WRONG_OWNER')
+    await call('result', { tabId: 'chat', jobId: job.jobId, ok: true, value: { ready: true }, file: job.open.address })
     return pending
   }
   const blank = await open({ path: 'test-output/nested/空白 book.xlsx', create: true })

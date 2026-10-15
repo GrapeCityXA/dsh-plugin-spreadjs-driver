@@ -87,7 +87,7 @@ try {
   const agent = {
     ctx,
     options: { provider: 'pack-smoke', model: 'test' },
-    session: { header: { cwd: WORKSPACE }, requestHeader() { return { config: { provider: 'pack-smoke', model: 'test' } } } },
+    session: { header: { id: 'pack-chat', cwd: WORKSPACE }, requestHeader() { return { config: { provider: 'pack-smoke', model: 'test' } } } },
   }
   const callTool = async (name, args) => ctx.tools.execute({
     signal: new AbortController().signal,

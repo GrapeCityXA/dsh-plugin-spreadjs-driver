@@ -15,7 +15,7 @@
  * loopback, and **nothing at all while no workbook is open**, which is most of
  * the time.
  */
-import { LIVE_CHANNEL, LIVE_POLL, LIVE_RESULT, type LiveJob, type LiveJobResult } from '../shared/live.ts'
+import { LIVE_CHANNEL, LIVE_POLL, LIVE_RESULT, LIVE_CHECK, type LiveJob, type LiveJobResult } from '../shared/live.ts'
 import { runAgainstProvider } from './executor.ts'
 import type { SpreadjsWorkbookProvider } from './types.ts'
 
@@ -73,6 +73,7 @@ function tabId(): string {
 
 /** A sleep that ends early when the loop is being torn down. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined
     const finish = (): void => {
@@ -108,6 +109,7 @@ function messageOf(error: unknown): string {
 async function runJob(
   providers: () => readonly SpreadjsWorkbookProvider[],
   job: LiveJob,
+  control: { signal: AbortSignal; checkActive: () => Promise<void> },
 ): Promise<LiveJobResult> {
   const available = providers()
   if (job.open !== undefined) {
@@ -122,9 +124,10 @@ async function runJob(
       return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_OPEN_FAILED', message: messageOf(error) }
     }
   }
-  const provider = job.target === undefined
+  const target = job.binding?.providerId ?? job.target
+  const provider = target === undefined
     ? available[0]
-    : available.find((candidate) => candidate.id === job.target)
+    : available.find((candidate) => candidate.id === target)
 
   if (provider === undefined) {
     return {
@@ -136,6 +139,15 @@ async function runJob(
         : `The designer is connected but does not have the workbook ${JSON.stringify(job.target)} open.`,
     }
   }
+
+  const matchesBinding = (): boolean => {
+    if (job.binding === undefined) return true
+    try {
+      const identity = provider.getWorkbookIdentity?.()
+      return identity?.sessionId === job.binding.sessionId && identity?.file === job.binding.file && identity?.instanceId === job.binding.instanceId
+    } catch { return false }
+  }
+  if (!matchesBinding()) return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_INTERRUPTED', message: 'The requested workbook instance is no longer loaded.' }
 
   if (provider.acquireDriverLease === undefined || provider.releaseDriverLease === undefined) {
     return {
@@ -170,7 +182,7 @@ async function runJob(
   const interrupted = (): boolean => {
     try {
       return ownerSignal?.aborted === true || !providers().includes(provider)
-        || provider.getWorkbook() !== workbook || provider.getActivePath?.() !== file
+        || provider.getWorkbook() !== workbook || provider.getActivePath?.() !== file || !matchesBinding()
     } catch { return true }
   }
   const interruption = (): LiveJobResult => ({
@@ -181,10 +193,14 @@ async function runJob(
     workbook = provider.getWorkbook()
     file = provider.getActivePath?.()
     ownerSignal = provider.getDriverLeaseSignal?.(lease)
+    await control.checkActive()
     if (workbook === undefined || workbook === null) {
       return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_NO_WORKBOOK', message: 'The editor has no loaded workbook.' }
     }
-    const outcome = await awaitOwner(runAgainstProvider(provider, job.code))
+    if (interrupted()) return interruption()
+    const outcome = await awaitOwner(runAgainstProvider(provider, job.code, control.signal))
+    if (interrupted()) return interruption()
+    await control.checkActive()
     if (interrupted()) return interruption()
     if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
 
@@ -199,9 +215,10 @@ async function runJob(
         }
       }
       try {
-        await awaitOwner(provider.save(lease))
+        await awaitOwner(provider.save(lease, { signal: control.signal, beforeWrite: control.checkActive }))
       } catch (error) {
         if (interrupted()) return interruption()
+        if (control.signal.aborted) return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_ABORTED', message: 'The caller stopped this job; no further automatic save is allowed.' }
         return {
           jobId: job.jobId,
           ok: false,
@@ -217,6 +234,7 @@ async function runJob(
       : { jobId: job.jobId, ok: true, value: outcome.value, file }
   } catch (error) {
     if (interrupted()) return interruption()
+    if (control.signal.aborted) return { jobId: job.jobId, ok: false, code: 'SJS_LIVE_ABORTED', message: 'The caller stopped this job; verify partial edits before continuing.' }
     return { jobId: job.jobId, ok: false, code: 'SJS_SCRIPT_ERROR', message: messageOf(error) }
   } finally {
     provider.releaseDriverLease(lease)
@@ -260,12 +278,12 @@ export function startLiveChannel(
         continue
       }
 
-      // Sent alongside `targets`, which is still what routing reads. This is how
-      // `sjs_live_status` can answer "which file does the designer have open"
-      // without a round trip — see LivePollRequest.workbooks.
+      // The host binds scoped jobs to these loaded-document identities and the
+      // browser revalidates them before execution and saving.
       const workbooks = offered.map((provider) => {
         const file = provider.getActivePath?.()
-        return file === undefined ? { id: provider.id } : { id: provider.id, file }
+        const identity = provider.getWorkbookIdentity?.()
+        return { id: provider.id, ...(file === undefined ? {} : { file }), ...identity }
       })
 
       let job: LiveJob | null = null
@@ -282,14 +300,47 @@ export function startLiveChannel(
         continue
       }
 
+      if (controller.signal.aborted) break
       if (job === null) {
         await sleep(POLL_DELAY_MS, controller.signal)
         continue
       }
 
-      const result = await runJob(providers, job)
+      const currentJob = job
+      const jobController = new AbortController()
+      const monitor = new AbortController()
+      const stop = (): void => { jobController.abort(); monitor.abort() }
+      controller.signal.addEventListener('abort', stop, { once: true })
+      const checkActive = async (): Promise<void> => {
+        jobController.signal.throwIfAborted()
+        try {
+          const response = await rpc.call(LIVE_CHANNEL, LIVE_CHECK, { jobId: currentJob.jobId, tabId: id }, monitor.signal)
+          if (!response.ok || (response.value as { active?: boolean } | null)?.active !== true) throw new Error('The caller is no longer waiting for this job')
+        } catch (error) {
+          jobController.abort()
+          throw error
+        }
+        jobController.signal.throwIfAborted()
+      }
+      // Keep cancellation and presence checks alive while arbitrary async code
+      // is awaiting. Do not unlock a still-running script merely on cancellation.
+      const monitoring = (async () => {
+        while (!monitor.signal.aborted && !jobController.signal.aborted) {
+          await sleep(250, monitor.signal)
+          if (monitor.signal.aborted) break
+          try { await checkActive() } catch { break }
+        }
+      })()
+      let result: LiveJobResult
       try {
-        await rpc.call(LIVE_CHANNEL, LIVE_RESULT, result, controller.signal)
+        result = await runJob(providers, job, { signal: jobController.signal, checkActive })
+      } finally {
+        monitor.abort()
+        controller.signal.removeEventListener('abort', stop)
+        await monitoring
+      }
+      try {
+        await rpc.call(LIVE_CHANNEL, LIVE_RESULT, { ...result, tabId: id }, controller.signal)
       } catch {
         // The host gave up on this job already; it has its own timeout and will
         // report SJS_LIVE_TIMEOUT. Retrying the post would only duplicate work.
