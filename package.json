@@ -38,8 +38,7 @@
     "skills",
     "docs",
     "cordis.patch.yml",
-    "README.md",
-    "README.zh-CN.md"
+    "README.md"
   ],
   "dsh": {
     "engines": {

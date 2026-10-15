@@ -53,7 +53,6 @@ const required = [
   'LICENSE',
   'cordis.patch.yml',
   'README.md',
-  'README.zh-CN.md',
   'lib/index.js',
   'lib/client.js',
   'templates/empty.xlsx',
