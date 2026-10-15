@@ -98,7 +98,7 @@ function messageOf(error: unknown): string {
  *
  * The file is written back **only when the job says so** (`save: true`), which
  * the host sets only when the user asked to save. Otherwise the edit lives in
- * the browser: visible, undoable, and not something the agent decided to
+ * the browser: visible, and not something the agent decided to
  * commit on the user's behalf.
  *
  * A save failure is reported as a failure even though the edit did land in the
@@ -120,15 +120,24 @@ async function runJob(
       ok: false,
       code: 'SJS_LIVE_NO_WORKBOOK',
       message: job.target === undefined
-        ? 'The designer is connected but no spreadsheet is open in it. Ask the user to open the file in the Web UI sidebar, or do this work against a file with sjs_execute.'
+        ? 'The designer is connected but no spreadsheet is open in it. Ask the user to open the file in the Web UI sidebar and wait for it to load.'
         : `The designer is connected but does not have the workbook ${JSON.stringify(job.target)} open.`,
     }
   }
 
+  const workbook = provider.getWorkbook()
+  const file = provider.getActivePath?.()
   const outcome = await runAgainstProvider(provider, job.code)
   if (!outcome.ok) return { jobId: job.jobId, ok: false, code: outcome.code, message: outcome.message }
 
-  const file = provider.getActivePath?.()
+  // An async snippet can outlive a tab switch or bridge selection. Never save
+  // or attribute its result to the different document now behind the proxy.
+  if (!providers().includes(provider) || provider.getWorkbook() !== workbook || provider.getActivePath?.() !== file) {
+    return {
+      jobId: job.jobId, ok: false, code: 'SJS_LIVE_WORKBOOK_CHANGED',
+      message: 'The editor changed workbooks during execution. Changes may remain in the previous workbook; nothing was saved by this job.',
+    }
+  }
   if (job.save === true) {
     // A bridge with no `save` is a failure, not a skip. Asking for a save and
     // being handed a success that wrote nothing is the worst of the three
@@ -179,7 +188,13 @@ export function startLiveChannel(
 
   void (async () => {
     while (!controller.signal.aborted) {
-      const offered = providers()
+      // A bridge may be registered before the editor has created or finished
+      // loading its workbook. Do not advertise such a provider: advertising it
+      // makes the host believe a target is runnable and can race the load.
+      const offered = providers().filter((provider) => {
+        try { const workbook = provider.getWorkbook(); return workbook !== undefined && workbook !== null }
+        catch { return false }
+      })
       const targets = offered.map((provider) => provider.id)
       if (targets.length === 0) {
         await sleep(IDLE_DELAY_MS, controller.signal)

@@ -1,6 +1,6 @@
 // Assert the packed tarball ships every runtime file a fresh install needs.
 // Runs `npm pack --dry-run --json` and compares the file list against the
-// required runtime set (host bundle, worker, skill, docs, patches).
+// required runtime set (host/client bundles, skill, docs, patches).
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -55,10 +55,12 @@ const required = [
   'README.md',
   'README.zh-CN.md',
   'lib/index.js',
-  'artifacts/sjs-worker.mjs',
+  'lib/client.js',
   'skills/spreadjs/SKILL.md',
   'docs/architecture.md',
 ]
+const forbidden = [...shipped].filter(path => path.startsWith('artifacts/') || path.includes('sjs-worker'))
+if (forbidden.length > 0) throw new Error('obsolete engine artifacts in tarball: ' + forbidden.join(', '))
 const missing = required.filter((path) => !shipped.has(path))
 if (missing.length > 0) {
   console.error(`tarball is missing required runtime file(s):\n  ${missing.join('\n  ')}`)

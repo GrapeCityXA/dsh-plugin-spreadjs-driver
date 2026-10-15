@@ -1,3 +1,5 @@
+> Historical design only. Superseded by [the editor-only architecture](architecture.md). The server browser and file tools described below have been removed.
+
 # 设计方案 · 与 SpreadJS Editor 的活工作簿联动
 
 **状态**：草案 v2（依赖方向已反转为 **editor → 本插件**），**发布前又改为 v3 名册制 —— 见下方 v3 说明**

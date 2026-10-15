@@ -1,3 +1,5 @@
+> Historical design only. Superseded by [the editor-only architecture](architecture.md). The server browser and file tools described below have been removed.
+
 # 设计方案 · 引擎运行时从 jsdom 迁到真实浏览器（含阶段 2：常驻引擎）
 
 **状态**：**阶段 1 已落地（2026-09-17）；阶段 2 常驻引擎已落地（2026-09-20）**。本文由"计划书"改写为"实际建成的东西 + 实测数字"，并逐条列出与原计划的偏差。阶段 2 的结论与数字见 §6，§3 的偏差表里"本阶段不做"的那一行已被阶段 2 取代。

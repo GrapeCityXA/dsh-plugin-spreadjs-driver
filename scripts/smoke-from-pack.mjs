@@ -1,8 +1,3 @@
-// "从 pack 安装冒烟": pack the real tarball, unpack it into node_modules/
-// exactly where an install would place it, then boot the packed host bundle
-// (lib/index.js) through a real cordis Context + SkillRegistry and drive one
-// worker round-trip + the skills seam — all from the packed files, not the
-// source tree. Offline: heavy deps resolve up the repo's own node_modules.
 import { spawnSync } from 'node:child_process'
 import { cp, mkdtemp, mkdir, rm, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -18,19 +13,15 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PACKED_NAME = '@grapecity-software/dsh-spreadjs-driver'
 
-// Run npm through a real process. On Windows, `.cmd` shims cannot be spawned
-// directly (EINVAL) — instead spawn the current node binary on npm's cli.js
-// (same interpreter, no shell). On POSIX, `npm` from PATH is a shell script.
 function spawnNpm(args) {
   const options = { cwd: ROOT, encoding: 'utf8' }
   if (process.platform !== 'win32') return spawnSync('npm', args, options)
   const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
   if (existsSync(cli)) return spawnSync(process.execPath, [cli, ...args], options)
-  // Fallback: rely on shell resolution for non-standard installs.
+
   return spawnSync('npm', args, { ...options, shell: true })
 }
 
-// --- 1. pack the real tarball -------------------------------------------------
 const tmp = await mkdtemp(join(tmpdir(), 'sjs-pack-'))
 const packDir = join(tmp, 'pack')
 await mkdir(packDir, { recursive: true })
@@ -49,11 +40,9 @@ if (tarballs.length !== 1) {
 const tgz = join(packDir, tarballs[0])
 console.log(`smoke-from-pack: packed ${tgz}`)
 
-// --- 2. unpack into repo node_modules, as an install would ----------------------
 const extractDir = join(tmp, 'x')
 await mkdir(extractDir, { recursive: true })
-// Windows System32 ships libarchive's bsdtar, which takes native paths; the GNU
-// tar that Git Bash puts on PATH misreads `C:\…` as a remote host. On POSIX, `tar` from PATH.
+
 const tarBin = process.platform === 'win32'
   ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
   : 'tar'
@@ -64,12 +53,10 @@ if (tar.status !== 0) {
   process.exit(tar.status ?? 1)
 }
 const staged = join(extractDir, 'package')
-const installed = join(ROOT, 'node_modules', PACKED_NAME)
-await rm(installed, { recursive: true, force: true })
+const installed = await mkdtemp(join(ROOT, 'node_modules', '.spreadjs-pack-'))
 await mkdir(join(ROOT, 'node_modules'), { recursive: true })
 await cp(staged, installed, { recursive: true })
 
-// --- 3. boot the PACKED host bundle --------------------------------------------
 let failures = 0
 let booted = false
 const step = async (name, fn) => {
@@ -90,6 +77,7 @@ try {
 
   const WORKSPACE = await mkdtemp(join(tmpdir(), 'sjs-pack-ws-'))
   const ctx = new Context()
+  ctx.provide('settings', { describe: () => [{ ns: 'spreadjs-editor', value: { bridge: PACKED_NAME } }] })
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(ToolRuntime)
   ctx.provide('llm', { async resolveModelInfo() { return { inputModalities: ['text'] } } })
@@ -122,34 +110,18 @@ try {
     assert(skill !== undefined, `spreadjs missing from packed catalog ${JSON.stringify(summaries.map((s) => s.name))}`)
     assert(skill.provider === 'spreadjs' && skill.source === 'bundled', `packed candidate: ${JSON.stringify(skill)}`)
     const loaded = await ctx.skills.get('spreadjs', { cwd: WORKSPACE })
-    assert(loaded !== undefined && typeof loaded.content === 'string' && loaded.content.includes('sjs_execute'),
+    assert(loaded !== undefined && typeof loaded.content === 'string' && loaded.content.includes('sjs_live_execute'),
       'packed skill body loads on demand')
   })
 
-  await step('sjs_new from the packed bundle creates a workbook', async () => {
-    const result = await callTool('sjs_new', { file: 'packed.ssjson' })
-    const body = okJson(result, 'sjs_new')
-    assert(body.ok === true && body.operation === 'new' && body.result.created === true,
-      `sjs_new body: ${JSON.stringify(body)}`)
-  })
-
-  await step('sjs_execute drives a worker spawned from the packed artifact', async () => {
-    const code = [
-      "const s = sheet()",
-      "s.setValue(0,0,'产品')", "s.setValue(1,0,'苹果')", "s.setValue(1,1,10)",
-      "s.setFormula(2,1,'=B2*2')",
-      "spread.resumeCalcService()", // the engine batches calculation; read after resuming
-      "return { a: s.getValue(0,0), doubled: s.getValue(2,1) }",
-    ].join('\n')
-    const result = await callTool('sjs_execute', { file: 'packed.ssjson', code })
-    const body = okJson(result, 'sjs_execute')
-    assert(body.result.a === '产品' && body.result.doubled === 20, `execute result: ${JSON.stringify(body.result)}`)
-  })
-
-  await step('sjs_status reports the workbook back', async () => {
-    const result = await callTool('sjs_status', { file: 'packed.ssjson' })
-    const body = okJson(result, 'sjs_status')
-    assert(body.result.sheets?.some((s) => s.usedRange?.rowCount >= 3), `status range: ${JSON.stringify(body.result)}`)
+  await step('packed bundle offers editor tools and no server fallback', async () => {
+    const result = await callTool('sjs_live_status', {})
+    const body = okJson(result, 'sjs_live_status')
+    assert(body.result.transport === 'unmounted' && body.result.workbooks.length === 0, JSON.stringify(body))
+    const denied = await callTool('sjs_live_execute', { code: 'return 1' })
+    assert(denied.isError === true, 'execution without editor transport must fail')
+    const old = await callTool('sjs_execute', { file: 'unused.ssjson', code: 'return 1' })
+    assert(old.isError === true, 'legacy server tool must not exist')
   })
 
   await rm(WORKSPACE, { recursive: true, force: true })

@@ -1,16 +1,6 @@
-// Build the three runtime artifacts from TypeScript sources:
-//   - host bundle  : src/host/index.ts   -> lib/index.js            (loaded by DSH)
-//   - sjs worker   : src/workers/sjs/entry.ts -> artifacts/sjs-worker.mjs (spawned per call)
-//   - client half  : src/client/index.ts -> lib/client.js           (loaded into the browser)
-//
-// The host bundle keeps the @deepseek-ai peers external so a second copy of
-// Cordis is never inlined. The worker has no static package imports: the
-// @grapecity-software UMD bundles it drives are located at runtime as files and
-// served to the browser, and the page half ships as page.embed.js.
-// The client half is wrapped as the module-table closure factory the DSH client
-// loader expects (same artifact shape the spreadjs-editor client uses).
+// Build the host dispatcher and the browser bridge. Neither bundles a spreadsheet engine.
 import { build } from 'esbuild'
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 
 const target = 'node22'
 // Keep every @deepseek-ai peer external so a second copy of Cordis and friends
@@ -33,23 +23,6 @@ const host = {
   external: peers,
   sourcemap: true,
   logLevel: 'info',
-}
-
-const worker = {
-  entryPoints: ['src/workers/sjs/entry.ts'],
-  bundle: true,
-  outfile: 'artifacts/sjs-worker.mjs',
-  format: 'esm',
-  platform: 'node',
-  target,
-  external: peers,
-  sourcemap: false,
-  logLevel: 'info',
-  // The browser half of the runtime ships as page script SOURCE, embedded into
-  // the worker bundle as a string and served to the page over loopback HTTP. It
-  // cannot be a normal module: it has to arrive at the page as a plain script
-  // (see the note at the top of page.embed.js).
-  loader: { '.embed.js': 'text' },
 }
 
 // The browser half is loaded by the DSH client-modules system, which expects a
@@ -75,9 +48,7 @@ const client = {
   footer: { js: 'return module.exports; } });' },
 }
 
-const onlyWorker = process.argv.includes('worker')
-const entries = onlyWorker ? [worker] : [host, worker, client]
-for (const options of entries) {
-  await build(options)
-}
-console.log(`esbuild: ${onlyWorker ? 'worker' : 'host + worker + client'} bundle(s) written`)
+// Only remove the generated legacy worker, including its source map.
+for (const file of ['lib/sjs-worker.mjs', 'lib/sjs-worker.mjs.map', 'lib/sjs-worker.js', 'lib/sjs-worker.js.map']) await rm(file, { force: true })
+for (const options of [host, client]) await build(options)
+console.log('esbuild: host + client bundles written')

@@ -1,19 +1,4 @@
-/**
- * `sjs_live_execute` — the tool that reaches the document on screen.
- *
- * Every other tool in this plugin works on a `.ssjson` file in the workspace:
- * a one-shot worker opens it, edits it, writes it back. This one works on the
- * workbook the user currently has open in the SpreadJS designer, and the change
- * is on screen the instant it lands. That difference is worth the extra tool
- * rather than a flag on `sjs_execute`, because it changes what the model has to
- * reason about — there is a person looking at this document, and the file on
- * disk is whatever the designer last saved.
- *
- * It fails fast and specifically when it cannot work: `SJS_LIVE_NO_CLIENT` when
- * no designer is connected at all, `SJS_LIVE_UNKNOWN_TARGET` when one is but
- * does not have the workbook asked for. Both are conditions the model can act
- * on, which a timeout would not be.
- */
+/** Execute against the Workbook supplied by the editor in the user browser. */
 import { readFile } from 'node:fs/promises'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
@@ -30,14 +15,12 @@ export function liveExecuteTool(ctx: Context, channel: LiveChannel, config: Reso
     name: 'sjs_live_execute',
     description:
       'Edit the spreadsheet the user has open right now in the SpreadJS designer, in their browser. '
-      + 'The change appears on screen immediately, so prefer this over sjs_execute whenever a designer '
-      + 'session is running and the user is looking at the workbook. '
+      + 'The editor must be open and this driver selected in Settings → Spreadsheet Editor. '
       + 'Code runs as an async function body with in scope: spread (the live Spread.Sheets.Workbook), '
       + 'workbook (alias), GC, sheet(name?) returning a worksheet, snapshot(), and console. '
-      + 'Unlike sjs_execute there is no io here: this code runs in the user\'s browser, not the engine, '
-      + 'so it has no file access — read files with sjs_execute and pass the values in. '
+      + 'There is no io helper or server-side spreadsheet engine. '
       + 'It may return a JSON-serializable value, which comes back to you. '
-      + 'The edit stays in the browser: the user can see and undo it, and their file is NOT '
+      + 'The edit stays in the browser: the user can see it, and their file is NOT '
       + 'modified unless you explicitly ask for that with save: true. '
       + 'Provide exactly one of code or codeFile.',
     timeoutMs: config.operationTimeoutMs,

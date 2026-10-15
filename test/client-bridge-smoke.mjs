@@ -223,13 +223,16 @@ async function run() {
   const entry = registry.entry
 
   const workbook = fakeWorkbook()
+  let workbookReady = false
+  let currentWorkbook = workbook
+  let activePath = 'C:/work/book.ssjson'
   let saves = 0
   let saveShouldFail = false
   const provider = {
     id: 'spreadjs-designer',
-    getWorkbook: () => workbook,
+    getWorkbook: () => workbookReady ? currentWorkbook : undefined,
     getNamespace: () => ({ Spread: { Sheets: {} } }),
-    getActivePath: () => 'C:/work/book.ssjson',
+    getActivePath: () => activePath,
     save: async () => {
       saves += 1
       if (saveShouldFail) throw new Error('disk is full')
@@ -246,6 +249,10 @@ async function run() {
 
     release = entry.attach(provider)
     assert(typeof release === 'function', 'attach returned no way to release the workbook')
+
+    await sleep(1_100)
+    assert(connection.polls === idle, 'an attached provider without a ready Workbook was advertised')
+    workbookReady = true
 
     await until(() => connection.polls > idle, 'the first poll')
   })()
@@ -326,6 +333,47 @@ async function run() {
     const result = connection.results[connection.results.length - 1]
     assert(result.ok === false && result.code === 'SJS_LIVE_NO_WORKBOOK', `got ${JSON.stringify(result)}`)
   })()
+
+  await step('a workbook withdrawn while a poll is in flight cannot execute or save', async () => {
+    const original = connection.rpc.call
+    const before = connection.results.length
+    const paintBefore = workbook.paint.length
+    const savesBefore = saves
+    connection.rpc.call = async (...args) => {
+      const response = await original(...args)
+      if (args[1] === 'poll' && response.value?.jobId === 'withdrawn') workbookReady = false
+      return response
+    }
+    connection.enqueue({ jobId: 'withdrawn', code: 'throw new Error("must not run")', save: true })
+    await until(() => connection.results.length > before, 'withdrawn Workbook refusal')
+    const result = connection.results.at(-1)
+    assert(result.ok === false && result.code === 'SJS_LIVE_NO_WORKBOOK', JSON.stringify(result))
+    assert(workbook.paint.length === paintBefore && saves === savesBefore, 'withdrawn Workbook was touched')
+    connection.rpc.call = original
+    workbookReady = true
+  })()
+
+  for (const change of ['instance', 'path']) {
+    await step('a document ' + change + ' change during async code prevents saving', async () => {
+      const before = connection.results.length
+      const savesBefore = saves
+      globalThis.__spreadjsTestSwitch = async () => {
+        if (change === 'instance') currentWorkbook = fakeWorkbook()
+        else activePath = 'C:/work/other.ssjson'
+      }
+      try {
+        connection.enqueue({ jobId: 'switch-' + change, code: 'await globalThis.__spreadjsTestSwitch(); return 1', save: true })
+        await until(() => connection.results.length > before, 'changed Workbook refusal')
+        const result = connection.results.at(-1)
+        assert(result.ok === false && result.code === 'SJS_LIVE_WORKBOOK_CHANGED', JSON.stringify(result))
+        assert(saves === savesBefore, 'the replacement document was saved')
+      } finally {
+        currentWorkbook = workbook
+        activePath = 'C:/work/book.ssjson'
+        delete globalThis.__spreadjsTestSwitch
+      }
+    })()
+  }
 
   await step('an unreachable host backs off instead of spinning', async () => {
     const broken = fakeConnection()

@@ -15,7 +15,7 @@ const DEFINITIONS = [
   {
     name: 'spreadjs',
     description:
-      'Create, inspect, edit, import, export, and screenshot .ssjson SpreadJS workbooks through the sjs_* DSH tools. Use proactively for any spreadsheet task — building or editing tables, cells, formulas, sheets, formatting; reading or writing .xlsx / .csv files; producing a .pdf or .png visual snapshot; or running SpreadJS JavaScript through sjs_execute for anything the narrow tools cannot express.',
+      'Inspect and edit the workbook open in the DSH SpreadJS editor through sjs_live_status and sjs_live_execute. Requires an editor-supplied Workbook in the user browser. Use for cells, formulas, sheets and formatting; save only through the editor when requested.',
   },
 ] as const
 

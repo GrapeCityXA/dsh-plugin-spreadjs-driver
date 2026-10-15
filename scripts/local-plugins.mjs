@@ -21,13 +21,10 @@ export const PLUGINS = [
     // package identity, and renaming it would break every script that reaches
     // for it (this file, the .bat wrappers, anyone's shell history).
     repo: join(WORKSPACE, 'dsh-spreadjs-excel'),
-    // The web profile only. The plugin itself is host-only and would run fine in
-    // a headless profile, but nothing here targets one any more: the workspace
-    // keeps a single profile, so there is one place to look and one to keep
-    // clean.
+    // Requires the web editor and its live browser connection.
     profiles: ['web'],
     // Byte-compared against the repo after install.
-    verify: ['lib/index.js', 'artifacts/sjs-worker.mjs'],
+    verify: ['lib/index.js', 'lib/client.js'],
   },
   {
     name: '@grapecity-software/dsh-spreadjs-editor',

@@ -26,8 +26,8 @@ export const BRIDGE_ID = '@grapecity-software/dsh-spreadjs-driver'
  * browser, and this plugin's host half READS it to decide whether it should be
  * present at all. See `host/activation.ts`.
  *
- * If the editor ever renames either, this plugin stops letting go of the roster
- * when someone else is chosen — a degradation, not a crash: the read fails open.
+ * If the editor renames either, tools remain unavailable until an explicit
+ * selection can be read.
  */
 export const EDITOR_SETTINGS_NAMESPACE = 'spreadjs-editor'
 export const BRIDGE_FIELD = 'bridge'

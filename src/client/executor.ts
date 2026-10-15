@@ -1,14 +1,4 @@
-/**
- * Run agent-supplied code against a *live* workbook, inside the page that owns
- * it — so a style, formula or sheet change is on screen the moment it lands.
- *
- * This mirrors the semantics of the host-side `sjs_execute` deliberately: same
- * injected names, same paint discipline, same error classification. The one
- * thing that cannot be mirrored is the isolation: the host runs user code in a
- * `node:vm` context, and a browser has no equivalent. `new Function` gives a
- * fresh scope but not a wall — code here can still reach the page's globals.
- * That is a documented limitation of the live path, not an oversight.
- */
+/** Run code in the page against the Workbook the editor supplied. Code shares page globals. */
 import type { SpreadjsWorkbookProvider } from './types.ts'
 
 /** Structured outcome, carrying the same codes the host-side tools use. */
@@ -16,10 +6,10 @@ export type LiveResult =
   | { readonly ok: true; readonly value: unknown }
   | { readonly ok: false; readonly code: string; readonly message: string }
 
-/** Names injected into user code, matching the host-side execute environment. */
+/** Names injected into user code, available to browser-side code. */
 const INJECTED = ['spread', 'workbook', 'GC', 'sheet', 'snapshot', 'console'] as const
 
-/** Cap the serialized result the same way the host-side path does. */
+/** Cap the serialized result before sending it through the channel. */
 const MAX_RESULT_CHARS = 200_000
 
 interface WorkbookLike {
@@ -52,7 +42,7 @@ function resolveSheet(workbook: WorkbookLike, name?: string): unknown {
   throw liveError('SJS_SHEET_NOT_FOUND', `sheet not found: ${JSON.stringify(name)}`)
 }
 
-/** A workbook summary shaped like the host-side `snapshot()`. */
+/** A compact workbook summary. */
 function summarize(workbook: WorkbookLike): unknown {
   const count = workbook.getSheetCount?.() ?? 0
   const sheets: unknown[] = []
@@ -92,7 +82,7 @@ function messageOf(error: unknown): string {
  * wrapper the engine synthesizes around a `new Function` body, and this file's
  * own prelude. The prelude is known here; the wrapper is not ours — it is
  * whatever the engine emits — so it is MEASURED once (one throw, cached) rather
- * than assumed. It currently comes out as 2, on both this path and the worker's.
+ * than assumed. It currently comes out as 2.
  *
  * If it cannot be measured the location is omitted and only the message is
  * reported: a line number that is off by the wrapper reads as fact and is worse
@@ -140,7 +130,7 @@ function locateInUserCode(error: unknown, code: string): string {
 }
 
 /**
- * JSON-round-trip the returned value, the way the host side does, so a
+ * JSON-round-trip the returned value before sending it to the host, so a
  * non-serializable result fails this call instead of poisoning the transcript.
  */
 function serializeSafe(value: unknown): unknown {
@@ -181,7 +171,7 @@ export async function runAgainstProvider(
       ok: false,
       code: 'SJS_LIVE_NO_WORKBOOK',
       message: 'The designer is connected but no spreadsheet is open in it. '
-        + 'Ask the user to open the file in the Web UI sidebar, or do this work against a file with sjs_execute.',
+        + 'Ask the user to open the file in the Web UI sidebar and wait for it to load.',
     }
   }
 

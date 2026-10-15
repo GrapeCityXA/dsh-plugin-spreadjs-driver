@@ -1,27 +1,4 @@
-/**
- * Compose the live-workbook channel and the tool that uses it.
- *
- * Separate from the `sjs` provider on purpose. Everything under `ctx.sjs` runs a
- * one-shot worker over a workspace file, and works in every profile including
- * headless. This works only when a browser is connected, has a completely
- * different failure vocabulary, and is useless in a headless session. Folding it
- * into the same service would mean every caller of `ctx.sjs` has to know which
- * half it is talking to.
- *
- * The services are reached through `ctx.inject` rather than `ctx.get`: this
- * mounts a route once, at apply time, and a profile whose web server comes up
- * later would be missed by a snapshot read. When there is no web server at all —
- * the headless profile — the callback simply never runs, the channel never
- * mounts, and the tool answers `SJS_LIVE_NO_CLIENT`, or `SJS_LIVE_NO_TRANSPORT`
- * once it knows why. That is the correct story for a session with no browser,
- * and it costs no special case.
- *
- * `connection` is read for one thing only: `requestRejection`, which is the
- * Host/Origin fence plus the signed browser cookie. Registering the route
- * through the connection service instead — `connection.rpc.handle` — is what
- * this used to do and it cannot work from a third-party plugin; see the note at
- * the top of `transport.ts`.
- */
+/** The only execution path: dispatch to an editor-supplied workbook. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ResolvedConfig } from '../config.ts'
 import { withSjsErrorContent } from '../tools/presentation.ts'
@@ -75,10 +52,7 @@ export function apply(ctx: Context, config: ResolvedConfig): void {
     }, 'spreadjs-live: workbook channel')
   })
 
-  // The live tools exist only while this plugin is the chosen bridge — the same
-  // rule as the file tools, through the same helper, so the two rows cannot
-  // disagree about whether this plugin is active. `activation.ts` carries the
-  // reasoning, including why every way of not knowing resolves to "present".
+  // Register only when the editor explicitly selects this bridge.
   keepPresent(ctx, 'live tools', () => {
     const dropExecute = ctx.tools.register(
       withSjsErrorContent(liveExecuteTool(ctx, channel, config)),
